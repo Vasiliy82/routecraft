@@ -1,0 +1,6 @@
+version: 1
+outbounds:
+  direct:
+    type: direct
+  reject:
+    type: reject

@@ -1,0 +1,9 @@
+version: 1
+rules:
+  - name: local-example
+    filter:
+      - domain:example.org
+      - port:8080
+    outbound: direct
+  - name: default
+    outbound: direct

@@ -1,0 +1,9 @@
+version: 1
+rules:
+  - name: reject-port
+    filter:
+      - domain:not-the-request.invalid
+      - port:18080
+    outbound: reject
+  - name: default
+    outbound: direct
