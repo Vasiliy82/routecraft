@@ -1,0 +1,21 @@
+rules:
+  - name: vpn-static
+    filter:
+      - geosite:openai
+      - geosite:cursor
+      - geosite:anthropic
+      - domain:2ip.io
+    outbound: через конкретную tailscale exit node
+
+  - name: vpn-sub
+    filter:
+      - geosite:ru-blocked
+      - geoip:ru-blocked
+      - geosite:youtube
+      - geosite:telegram
+      - geoip:telegram
+      - geosite:whatsapp
+    outbound: через VPN subscription
+
+  - name: default
+    outbound: direct
