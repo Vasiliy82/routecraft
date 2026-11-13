@@ -15,7 +15,19 @@ rules:
       - geosite:telegram
       - geoip:telegram
       - geosite:whatsapp
+      - domain:ifconfig.me
     outbound: через VPN subscription
+
+  - name: test-direct
+    filter:
+      - domain:icanhazip.com
+    outbound: direct
+
+  - name: test-block
+    filter:
+      - domain:theuselessweb.com
+      - domain:block.routecraft.test
+    outbound: reject
 
   - name: default
     outbound: direct

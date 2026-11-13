@@ -71,6 +71,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	}
 	outbounds := policy.Outbounds{Version: 1, Outbounds: map[string]policy.Outbound{
 		"direct":         {Type: "direct"},
+		"reject":         {Type: "reject"},
 		"vpn-sub":        {Type: "sing-box-tag", Tag: "vpn-sub"},
 		"tailscale-exit": {Type: "sing-box-tag", Tag: "tailscale-exit"},
 	}}
@@ -106,7 +107,6 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	}
 	// Sniff first so the test-only domain can be matched for transparent traffic.
 	rules = append(rules, compiled.Route.Rules[0])
-	rules = append(rules, map[string]any{"domain": []string{"block.routecraft.test"}, "action": "reject"})
 	rules = append(rules, compiled.Route.Rules[1:]...)
 	config := map[string]any{
 		"log": map[string]any{"level": "debug"},
