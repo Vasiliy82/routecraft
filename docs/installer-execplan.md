@@ -15,7 +15,7 @@ The first deliverable installs and starts the existing PoC; it does not claim th
 - [x] (2026-11-13) Implemented cross-build bundles and SHA256 sidecars for x86_64, ARM64, and ARMv7.
 - [x] (2026-11-13) Implemented target-side read-only preflight, staged install, prompted configuration, safe secret files, candidate generation, and explicit activation.
 - [x] (2026-11-13) Validated shell syntax, read-only preflight, staged install without changing active JSON/process, candidate generation on a cached subscription fixture, explicit activation, and four real client routes on the isolated RouteCraft VM.
-- [ ] Finish the final bundle rebuild/checksum review, commit and push. TOP50 `.253` and R28S remain user-operated and unmodified.
+- [x] (2026-11-13) Rebuilt all architecture bundles, verified SHA256 sidecars, and committed/pushed the installer and documentation to `origin/main`. TOP50 `.253` and R28S remain user-operated and unmodified.
 
 ## Surprises & Discoveries
 
