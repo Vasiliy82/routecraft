@@ -181,4 +181,5 @@
 
 - Сделано: создан тег `v0.1.0`; workflow собрал и опубликовал bootstrap, bundles amd64/arm64/armv7 и SHA256 sidecars.
 - Проверка: workflow завершился успешно. На OpenWrt прямой `github.com/.../releases/latest/download/...` timeoutился, но metadata через GitHub API и asset через API с `Accept: application/octet-stream` скачались. Bundle amd64 размером 1,071,585 байт прошёл `sha256sum -c`. Новая версия bootstrap использует API asset endpoint; `sh -n` на OpenWrt прошёл. Сам установщик повторно не запускался.
-- Вывод: Release опубликован. Для надёжной работы в сети, где прямой URL Release недоступен, bootstrap получает asset ID из публичной release metadata и скачивает asset через API/CDN redirect.
+- Вывод: первый Release опубликован. Для надёжной работы в сети, где прямой URL Release недоступен, bootstrap получает asset ID из публичной release metadata и скачивает asset через API/CDN redirect.
+- Продолжение: после добавления API downloader опубликован patch-release `v0.1.1`; workflow завершился успешно. На OpenWrt текущий bootstrap из `main` скачан с HTTP 200, `sh -n` прошёл, присутствие API downloader подтверждено. Полный мастер повторно не запускался.
