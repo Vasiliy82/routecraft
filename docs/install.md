@@ -7,6 +7,7 @@
 - OpenWrt с доступом к root-shell по SSH или через консоль. Полностью проверен OpenWrt 25.12.6 x86_64; сборки подготовлены для `x86_64/amd64`, `aarch64/arm64` и `armv7`.
 - Интернет и DNS с самого роутера: нужны настроенные OpenWrt package feeds, GitHub, источники GeoSite/GeoIP и ваш VLESS provider.
 - Одна сетевая группа: LAN-интерфейс, через который приходят клиенты, совпадает с интерфейсом default route самого роутера. Схема с раздельными WAN и LAN пока не поддерживается.
+- Перед скачиванием проверьте именно сеть роутера, а не клиента: `ip -4 route` должен показывать `default via <upstream> dev <lan-интерфейс>`, а `nslookup github.com` должен разрешать адрес. Если default route или DNS upstream не настроен, bootstrap завершится ошибкой загрузки, даже если SSH и ping до соседнего шлюза работают.
 - Свободное место на persistent-разделе и в `/tmp`. Перед запуском можно посмотреть его командой `df -h / /tmp`; точный минимум зависит от firmware и пакетов.
 - Клиенты должны использовать этот OpenWrt как default gateway. Инсталлятор не меняет настройки DHCP, DNS-рекламу или шлюз клиентских устройств.
 
@@ -14,14 +15,16 @@
 
 Если на роутере уже работает другой sing-box/TPROXY, занят mark `0x81`, table `100` или порт `12345`, установщик остановит активацию, не выключая чужую конфигурацию. Сначала потребуется отдельный контролируемый переход. На известных устройствах состояние до установки может отличаться от чистой VM.
 
+Для тестового TOP50 `.253` однорукий upstream подключён через `br-lan`: статический IP `192.168.80.253/24`, шлюз и DNS `192.168.80.254`. Если повторяется `Failed to send request: Operation not permitted`, проверьте `ip -4 route`, `/etc/resolv.conf` и `nslookup github.com`. На этом устройстве причиной были отсутствующие `network.lan.gateway` и `network.lan.dns`; их настроили через UCI. Для другого места используйте фактический адрес upstream, а не копируйте `.254` вслепую.
+
 ## Установка после публикации GitHub Release
 
-Сначала подключитесь к OpenWrt по SSH под `root`. На виртуальной машине откройте root-shell через консоль гипервизора или SSH. После публикации репозитория и первого тега `v*` GitHub Actions создаст release с bundle и checksum для каждой архитектуры.
+Сначала подключитесь к OpenWrt по SSH под `root`. На виртуальной машине откройте root-shell через консоль гипервизора или SSH. После публикации репозитория и первого тега `v*` GitHub Actions создаст release с bootstrap, bundle и checksum для каждой архитектуры.
 
 Запустите bootstrap:
 
 ```sh
-uclient-fetch -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
+uclient-fetch -4 -O /tmp/routecraft-install.sh https://github.com/Vasiliy82/routecraft/releases/latest/download/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
 Bootstrap определит `uname -m`, скачает архив и sidecar последнего release, проверит SHA256 и запустит `install.sh --install`. Затем мастер настройки:

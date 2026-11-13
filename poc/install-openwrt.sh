@@ -15,15 +15,28 @@ download() {
     url=$1
     destination=$2
     if command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -O "$destination" "$url"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -fL --connect-timeout 10 --max-time 180 "$url" -o "$destination"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -O "$destination" "$url"
-    else
-        echo 'No HTTPS download client is available (expected uclient-fetch, curl, or wget).' >&2
-        exit 1
+        if uclient-fetch -4 -O "$destination" "$url" && [ -s "$destination" ]; then
+            return 0
+        fi
+        echo 'uclient-fetch failed over IPv4; trying another available downloader.' >&2
+        rm -f "$destination"
     fi
+    if command -v curl >/dev/null 2>&1; then
+        if curl -4 -fL --connect-timeout 10 --max-time 180 "$url" -o "$destination" && [ -s "$destination" ]; then
+            return 0
+        fi
+        echo 'curl failed over IPv4.' >&2
+        rm -f "$destination"
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        if wget -4 -O "$destination" "$url" && [ -s "$destination" ]; then
+            return 0
+        fi
+        echo 'wget failed over IPv4.' >&2
+        rm -f "$destination"
+    fi
+    echo "ERROR: all available downloaders failed for $url" >&2
+    return 1
 }
 
 temporary=$(mktemp -d /tmp/routecraft-install.XXXXXX)

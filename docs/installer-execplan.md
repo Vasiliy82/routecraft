@@ -6,7 +6,7 @@ This ExecPlan is a living document. Maintain `Progress`, `Surprises & Discoverie
 
 ## Purpose / Big Picture
 
-The repository currently has a working gateway PoC and manual copy/paste setup instructions, but no installer or first-run configuration helper. This work will produce a portable bundle that a user can copy to an OpenWrt router, inspect with a read-only preflight, configure with prompts, and explicitly install or activate. It will first be exercised on the dedicated RouteCraft VM and prepared for the user's x86_64 TOP50 router; the same bundle builder will include common ARM targets for the later R28S trial. The agent will not log into or modify the live TOP50 `.253` or the R28S.
+The repository currently has a working gateway PoC and manual copy/paste setup instructions, but no installer or first-run configuration helper. This work produces a portable bundle that a user can copy to an OpenWrt router, inspect with a read-only preflight, configure with prompts, and explicitly install or activate. The original validation used dedicated VMs; a later user instruction authorized direct installation diagnosis and package staging on TOP50 `.253`. R28S remains untouched and its exact OpenWrt build and CPU architecture are still unknown.
 
 The first deliverable installs and starts the existing PoC; it does not claim that the incomplete general `routecraft apply` product command exists. The helper must protect an existing router configuration: default inspection is read-only, an incompatible listener or routing mark is reported before activation, secrets are prompted without echo and stored with mode 0600, and the user must explicitly confirm activation.
 
@@ -18,6 +18,7 @@ The first deliverable installs and starts the existing PoC; it does not claim th
 - [x] (2026-11-13) Implemented target-side read-only preflight, staged install, prompted configuration, safe secret files, candidate generation, and explicit activation.
 - [x] (2026-11-13) Validated shell syntax, read-only preflight, staged install without changing active JSON/process, candidate generation on a cached subscription fixture, explicit activation, and four real client routes on the isolated RouteCraft VM.
 - [x] (2026-11-13) Rebuilt all architecture bundles, verified SHA256 sidecars, and committed/pushed the installer and documentation to `origin/main`. TOP50 `.253` and R28S remain user-operated and unmodified.
+- [x] (2026-11-14) After explicit user authorization, diagnosed and prepared TOP50 `.253`: fixed its missing static gateway/DNS, installed runtime packages from OpenWrt feeds, reran preflight successfully, and left RouteCraft inactive. Public latest Release remains unavailable until a tag is published.
 
 ## Surprises & Discoveries
 
@@ -39,6 +40,9 @@ The first deliverable installs and starts the existing PoC; it does not claim th
 - Observation: the subscription provider returned HTTP 502 during one wizard test; the last saved test snapshot worked as a local fixture and candidate validation completed.
 
   Evidence: live fetch returned curl HTTP 502; with the same saved subscription exposed through temporary uhttpd, the helper generated a 12,595-byte candidate and `sing-box check` succeeded. The active config hash remained unchanged.
+- Observation: TOP50 itself initially had no IPv4 default route and no upstream DNS, so its bootstrap request failed even though its LAN neighbor replied to ping.
+
+  Evidence: `ip -4 route get 1.1.1.1` returned `Network unreachable`; `/tmp/resolv.conf.d/resolv.conf.auto` was empty. After storing gateway and DNS `.254` on static `br-lan`, `uclient-fetch -4` downloaded the source bootstrap with HTTP 200.
 
 ## Decision Log
 
@@ -47,6 +51,12 @@ The first deliverable installs and starts the existing PoC; it does not claim th
   Rationale: the user wants a usable install/configuration helper to try at two sites; the current PoC already routes traffic and has real egress evidence, while general transactional apply is not implemented. Keep the claim and scope explicit.
 
   Date/Author: 2026-11-13, Codex.
+
+- Decision: prepare TOP50 networking only as needed to restore the documented one-arm upstream, install dependencies, and stop before RouteCraft activation.
+
+  Rationale: the user explicitly authorized direct diagnosis on `.253`; its upstream `.254` replied on the directly connected LAN, and existing UCI had neither a gateway nor DNS. Enabling only that gateway and resolver allowed the installer to be tested without redirecting client traffic through new RouteCraft rules.
+
+  Date/Author: 2026-11-14, Codex.
 - Decision: the bundle builder will include Linux `amd64`, `arm64`, and `arm`/GOARM=7 variants; the target helper selects only by `uname -m` and refuses an unknown architecture.
 
   Rationale: x86_64 is documented for TOP50 and the R28S architecture is unknown. A small set of common binaries allows later testing without claiming universal OpenWrt compatibility.
@@ -67,7 +77,7 @@ The first deliverable installs and starts the existing PoC; it does not claim th
 
 Implemented a cross-platform OpenWrt PoC bundle and guarded installer/configuration flow. On VM1, `install.sh --check` passed; `--install` staged the package while preserving the active sing-box JSON hash and process id; a wizard candidate built from the saved subscription fixture passed `sing-box check`, and secrets had mode 0600. Activation then started the procd service and VM2 again returned the expected Tailscale, VLESS, direct, and reject outcomes. The first activation test caught and fixed an unexpanded interface variable before its final traffic check.
 
-The VLESS provider briefly returned HTTP 502, so new configuration could not be sourced from it during the test; the helper failed safely, then the flow was validated using a local HTTP fixture of the last saved test subscription. This helper is for the current PoC only, not the future transactional production `apply` command. It does not install sing-box/kernel packages and refuses to activate over known conflicting TPROXY ownership. The user must collect the R28S OpenWrt release and `uname -m` before choosing its bundle. Neither TOP50 nor R28S was changed.
+The VLESS provider briefly returned HTTP 502, so new configuration could not be sourced from it during the VM test; the helper failed safely, then the flow was validated using a local fixture of the last saved test subscription. A later, user-authorized run on TOP50 found missing local gateway/DNS configuration, stored the upstream values, installed `sing-box 1.13.21` and required packages, and passed the second preflight with 23.6 MiB free. RouteCraft service/rules were not activated. The current helper is still for the PoC, not the future transactional production `apply` command. The public one-command bootstrap remains incomplete until a version tag creates the first GitHub Release. R28S remains untouched; collect its OpenWrt release and `uname -m` before choosing its bundle.
 
 ## Context and Orientation
 
@@ -113,10 +123,16 @@ Do not call the helper production-ready merely because files copy or sing-box st
 
 ## Artifacts and Notes
 
-Current evidence from the dedicated PoC: VM2 reaches `2ip.io` through Tailscale, `ifconfig.me` through VLESS, `icanhazip.com` direct, and `theuselessweb.com` is rejected. The observed egress IP is dynamic. Live hardware `.253` and the later R28S are outside this plan's write scope.
+Current evidence from the dedicated PoC: VM2 reaches `2ip.io` through Tailscale, `ifconfig.me` through VLESS, `icanhazip.com` direct, and `theuselessweb.com` is rejected. TOP50 `.253` now has its documented upstream route/DNS and staged runtime packages, but RouteCraft remains inactive. R28S is outside this plan's write scope.
 
 ## Interfaces and Dependencies
 
 The host package builder uses Go's standard `go build` cross-compilation and PowerShell/Windows `tar` plus `certutil` or PowerShell SHA256. The router helper uses only `/bin/sh`/BusyBox ash and existing OpenWrt tools; it does not require local Python. Runtime requirements are the tested sing-box build with `with_tailscale`, `curl`, `ip-full`, nftables TPROXY support, and enough persistent space. Since package names/repositories vary by OpenWrt release, first version reports missing dependencies instead of silently installing an unverified package.
 
-Change note: created on 2026-11-13 after the user asked for an installer/configuration helper for manual rollout to TOP50, then R28S. Update on 2026-11-13 records implementation and testing of architecture bundles, preflight, staged install, prompted configuration and explicit activation; a TPROXY heredoc defect found during activation was corrected before final acceptance. Scope remains the existing PoC package with guarded activation; live devices are intentionally not modified.
+Change note: created on 2026-11-13 after the user asked for an installer/configuration helper for manual rollout to TOP50, then R28S. Update on 2026-11-13 records implementation and VM testing of architecture bundles, preflight, staged install, prompted configuration and explicit activation; a TPROXY heredoc defect found during activation was corrected before acceptance. The 2026-11-14 user-authorized TOP50 network repair and dependency installation are recorded above; RouteCraft was not activated.
+
+## Update 2026-11-14 — user-authorized TOP50 installation diagnosis
+
+The earlier restriction against touching `.253` is superseded by the user's explicit authorization in this task. The purpose was to diagnose the reported bootstrap download error and test installation directly on the TOP50 OpenWrt host. The machine reported OpenWrt 25.12.6 x86_64, static `br-lan` `192.168.80.253/24`, and upstream `.254`. Initially it had no default route or configured DNS server. After confirming `.254` was reachable, the missing gateway and DNS were saved as `network.lan.gateway=192.168.80.254` and `network.lan.dns=192.168.80.254`. This is required before any network bootstrap because the router itself must reach GitHub.
+
+The amd64 package built from this working tree passed its SHA256 check. `install.sh --install` installed `sing-box 1.13.21`, `curl`, `ip-full`, `kmod-nf-tproxy`, and `kmod-nft-tproxy`; a second `install.sh --check` passed including the TPROXY kernel expression and embedded Tailscale endpoint check. No RouteCraft service was started, and no RouteCraft routes, tables, or nftables rules were activated. GitHub's latest-release API returned HTTP 404 because no public release exists yet, so the online bootstrap cannot complete its bundle download until the first tagged release is published. Reproduction details are in `docs/development-journal.md` and `docs/test-environment.md`.
