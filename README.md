@@ -16,8 +16,16 @@ RouteCraft опирается на sing-box для прокси и выбора 
 
 После публикации репозитория и первого GitHub Release установка запускается одной командой из root-shell OpenWrt:
 
+Сначала проверьте доступ к интернету с самого роутера. На чистом OpenWrt используйте штатный `uclient-fetch`:
+
 ```sh
-uclient-fetch -4 -O /tmp/routecraft-install.sh https://github.com/Vasiliy82/routecraft/releases/latest/download/install-openwrt.sh && sh /tmp/routecraft-install.sh
+uclient-fetch -4 -T 8 -O /dev/null https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh
+```
+
+Если проверка не проходит, сначала восстановите интернет на роутере. Если `curl` уже установлен, эквивалентная проверка: `curl -4 -fIsS --connect-timeout 5 https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh`.
+
+```sh
+uclient-fetch -4 -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
 Инсталлятор скачает подходящий bundle, проверит контрольную сумму, установит недостающие пакеты из настроенных OpenWrt feeds и запустит мастер. Мастер спросит параметры туннелей и попросит отдельно подтвердить активацию. Первый Release появится после публикации репозитория и push тега вида `v0.1.0`; до этого используйте сборку и установку из [руководства](docs/install.md#установка-до-первого-release).

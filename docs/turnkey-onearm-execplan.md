@@ -6,7 +6,7 @@ This ExecPlan is a living document. Update its progress, discoveries, decisions 
 
 Make the existing one-arm RouteCraft PoC installable on a clean, supported OpenWrt router with one short command from the public repository. The helper downloads the correct architecture bundle, installs required OpenWrt packages, prompts for site settings and secrets, validates the generated sing-box config, and only then asks for explicit activation. The same LAN interface remains the client-facing and upstream-facing interface; RouteCraft does not edit the router's LAN gateway distribution. A two-interface WAN/LAN design is explicitly out of scope for this stage.
 
-Do not modify live TOP50 `.253` or R28S. Implement and validate only against the isolated RouteCraft VM(s). The installer must not run `apk upgrade` or `opkg upgrade`, remove unrelated services, or silently take over existing policy routing.
+Do not modify the live physical router or R28S as part of this plan. Implement and validate against the isolated RouteCraft VM(s). The installer must not run `apk upgrade` or `opkg upgrade`, remove unrelated services, or silently take over existing policy routing.
 
 ## Progress
 

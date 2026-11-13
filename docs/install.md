@@ -7,6 +7,11 @@
 - OpenWrt с доступом к root-shell по SSH или через консоль. Полностью проверен OpenWrt 25.12.6 x86_64; сборки подготовлены для `x86_64/amd64`, `aarch64/arm64` и `armv7`.
 - Доступ в интернет с самого роутера: он нужен для OpenWrt package feeds, GitHub, источников GeoSite/GeoIP и вашего VLESS provider.
 - Одна сетевая группа: LAN-интерфейс, через который приходят клиенты, совпадает с интерфейсом default route самого роутера. Схема с раздельными WAN и LAN пока не поддерживается.
+- Перед установкой проверьте интернет с самого роутера. На чистом OpenWrt выполните:
+
+  `uclient-fetch -4 -T 8 -O /dev/null https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh`
+
+  Если проверка не проходит, сначала восстановите интернет на роутере. При установленном `curl` можно проверить той же ссылкой: `curl -4 -fIsS --connect-timeout 5 https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh`.
 - Свободное место на persistent-разделе и в `/tmp`. Перед запуском можно посмотреть его командой `df -h / /tmp`; точный минимум зависит от firmware и пакетов.
 - Клиенты должны использовать этот OpenWrt как default gateway. Инсталлятор не меняет настройки DHCP, DNS-рекламу или шлюз клиентских устройств.
 
@@ -21,7 +26,7 @@
 Запустите bootstrap:
 
 ```sh
-uclient-fetch -4 -O /tmp/routecraft-install.sh https://github.com/Vasiliy82/routecraft/releases/latest/download/install-openwrt.sh && sh /tmp/routecraft-install.sh
+uclient-fetch -4 -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
 Bootstrap определит `uname -m`, скачает архив и sidecar последнего release, проверит SHA256 и запустит `install.sh --install`. Затем мастер настройки:
