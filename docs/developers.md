@@ -28,7 +28,7 @@ make build
 make package-openwrt
 ```
 
-Команда создаёт Linux `amd64`, `arm64` и `armv7` bundles с SHA256 sidecar в `poc/bundles/`; эти небольшие prebuilt артефакты коммитятся в репозиторий рядом с установщиком, и чистый роутер скачивает их прямо из `main`. Теговый GitHub Release может быть создан дополнительно, но установщику не нужен.
+Команда создаёт Linux `amd64`, `arm64` и `armv7` bundles с SHA256 sidecar в `poc/bundles/`; эти prebuilt артефакты коммитятся в репозиторий рядом с установщиком. Bootstrap скачивает из репозитория bundle подходящей архитектуры и проверяет его checksum.
 
 Примеры экспериментального CLI:
 

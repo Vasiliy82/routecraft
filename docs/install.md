@@ -29,7 +29,7 @@
 uclient-fetch -4 -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
-Bootstrap определит `uname -m`, скачает подходящий архив и sidecar прямо из ветки `main`, проверит SHA256 и запустит `install.sh --install`. GitHub Releases не требуются. Затем мастер настройки:
+Bootstrap определит `uname -m`, скачает подходящий архив и sidecar прямо из репозитория, проверит SHA256, установит недостающие пакеты из настроенных OpenWrt feeds и запустит мастер настройки:
 
 1. Покажет обнаруженные LAN-интерфейс, subnet и DNS; значения можно скорректировать.
 2. Спросит Headscale control URL, Tailscale Exit Node, VLESS subscription URL и pre-auth key. Секреты вводятся без отображения и сохраняются локально с ограниченными правами.

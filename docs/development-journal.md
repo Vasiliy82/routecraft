@@ -183,3 +183,9 @@
 - Проверка: workflow завершился успешно. На OpenWrt прямой `github.com/.../releases/latest/download/...` timeoutился, но metadata через GitHub API и asset через API с `Accept: application/octet-stream` скачались. Bundle amd64 размером 1,071,585 байт прошёл `sha256sum -c`. Новая версия bootstrap использует API asset endpoint; `sh -n` на OpenWrt прошёл. Сам установщик повторно не запускался.
 - Вывод: первый Release опубликован. Для надёжной работы в сети, где прямой URL Release недоступен, bootstrap получает asset ID из публичной release metadata и скачивает asset через API/CDN redirect.
 - Продолжение: после добавления API downloader опубликован patch-release `v0.1.1`; workflow завершился успешно. На OpenWrt текущий bootstrap из `main` скачан с HTTP 200, `sh -n` прошёл, присутствие API downloader подтверждено. Полный мастер повторно не запускался.
+
+## 2026-11-14 — установка напрямую из репозитория
+
+- Сделано: bootstrap и amd64 bundle скачаны на OpenWrt с raw URL публичного репозитория. `install.sh --install` поставил недостающие пакеты через штатный `apk` и разместил файлы RouteCraft; полная настройка и активация не запускались.
+- Проверка: SHA256 bundle совпала; после установки `install.sh --check` подтвердил sing-box 1.13.21, embedded Tailscale endpoint, TPROXY и отсутствие известных конфликтов. Пересборка amd64/arm64/armv7 bundles на хосте разработки создала sidecars с совпадающими SHA256.
+- Вывод: установка на новом OpenWrt идёт одной командой из README, без ручной сборки и внешних подготовленных архивов. На тестовой машине пакеты и файлы подготовлены, но RouteCraft service, маршруты и nftables правила не активированы.
