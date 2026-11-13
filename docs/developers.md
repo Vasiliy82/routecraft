@@ -28,7 +28,7 @@ make build
 make package-openwrt
 ```
 
-Команда создаёт Linux `amd64`, `arm64` и `armv7` bundles с SHA256 sidecar в `.cache/releases/`. Release pipeline запускается push tag `v*`, собирает те же файлы и прикрепляет их к GitHub Release.
+Команда создаёт Linux `amd64`, `arm64` и `armv7` bundles с SHA256 sidecar в `poc/bundles/`; эти небольшие prebuilt артефакты коммитятся в репозиторий рядом с установщиком, и чистый роутер скачивает их прямо из `main`. Теговый GitHub Release может быть создан дополнительно, но установщику не нужен.
 
 Примеры экспериментального CLI:
 

@@ -19,9 +19,9 @@
 
 Если на роутере уже работает другой sing-box/TPROXY, занят mark `0x81`, table `100` или порт `12345`, установщик остановит активацию, не выключая чужую конфигурацию. Сначала потребуется отдельный контролируемый переход. На известных устройствах состояние до установки может отличаться от чистой VM.
 
-## Установка после публикации GitHub Release
+## Установка из публичного репозитория
 
-Сначала подключитесь к OpenWrt по SSH под `root`. На виртуальной машине откройте root-shell через консоль гипервизора или SSH. После публикации репозитория и первого тега `v*` GitHub Actions создаст release с bootstrap, bundle и checksum для каждой архитектуры.
+Сначала подключитесь к OpenWrt по SSH под `root`. На виртуальной машине откройте root-shell через консоль гипервизора или SSH. Репозиторий содержит готовые bundles amd64, arm64 и armv7 вместе с SHA256 sidecar в `poc/bundles/`.
 
 Запустите bootstrap:
 
@@ -29,7 +29,7 @@
 uclient-fetch -4 -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
-Bootstrap определит `uname -m`, скачает архив и sidecar последнего release, проверит SHA256 и запустит `install.sh --install`. Затем мастер настройки:
+Bootstrap определит `uname -m`, скачает подходящий архив и sidecar прямо из ветки `main`, проверит SHA256 и запустит `install.sh --install`. GitHub Releases не требуются. Затем мастер настройки:
 
 1. Покажет обнаруженные LAN-интерфейс, subnet и DNS; значения можно скорректировать.
 2. Спросит Headscale control URL, Tailscale Exit Node, VLESS subscription URL и pre-auth key. Секреты вводятся без отображения и сохраняются локально с ограниченными правами.
@@ -42,42 +42,9 @@ Bootstrap определит `uname -m`, скачает архив и sidecar п
 
 Создайте OpenWrt VM с одной сетевой картой, подключённой к виртуальному сегменту, где доступен upstream gateway. Проверьте, что default route OpenWrt использует этот же LAN bridge. Затем подключите отдельную клиентскую VM к тому же L2-сегменту и укажите адрес OpenWrt VM её шлюзом по умолчанию. Для первой проверки удобнее отдельная виртуальная L2-сеть, чтобы тестовый перехват не затронул другие устройства. Сохраните доступ к консоли гипервизора на время настройки.
 
-## Установка до первого Release
+## Обновление bundles разработчиками
 
-Если готовый публичный Release ещё не создан, соберите bundle на машине разработки из клона репозитория. Нужны Go, `make`, PowerShell и `tar`:
-
-```sh
-git clone https://github.com/Vasiliy82/routecraft.git
-cd routecraft
-make package-openwrt
-```
-
-В `.cache/releases/` будут три архива и `.sha256` sidecar. На целевом OpenWrt проверьте архитектуру:
-
-```sh
-uname -m
-```
-
-Скопируйте соответствующие `routecraft-poc-openwrt-<arch>.tar.gz` и `.sha256` на OpenWrt. Например, для `x86_64`, на машине разработки выполните:
-
-```sh
-scp -O .cache/releases/routecraft-poc-openwrt-amd64.tar.gz .cache/releases/routecraft-poc-openwrt-amd64.tar.gz.sha256 root@<openwrt-ip>:/tmp/
-```
-
-Затем на OpenWrt выполните:
-
-```sh
-cd /tmp
-sha256sum -c routecraft-poc-openwrt-amd64.tar.gz.sha256
-mkdir -p /tmp/routecraft-install
-tar -xzf routecraft-poc-openwrt-amd64.tar.gz -C /tmp/routecraft-install
-cd /tmp/routecraft-install
-sh ./install.sh --check
-sh ./install.sh --install
-sh /etc/routecraft-poc/configure.sh
-```
-
-`--check` ничего не меняет. `--install` добавляет недостающие пакеты и stage-ит файлы в `/etc/routecraft-poc`, но не активирует маршрутизацию. Команда configure запускает тот же мастер, что и публичный bootstrap.
+При изменении PoC разработчик запускает `make package-openwrt` и коммитит обновлённые архивы и SHA256 sidecars из `poc/bundles/`. Пользователю вручную собирать или копировать bundle не нужно.
 
 ## Быстрая проверка
 
@@ -97,5 +64,5 @@ curl -4 -I --max-time 10 https://theuselessweb.com/  # ожидается отк
 - Перехватывается IPv4 TCP/UDP; это не готовый полнофункциональный маршрутизатор для IPv6/ICMP.
 - Схема только однорукая; WAN/LAN с разными группами интерфейсов — следующий этап.
 - Нет LuCI, обновления VLESS-подписки по расписанию и автоматического обновления GeoSite/GeoIP.
-- Готовый публичный one-command install заработает после публикации репозитория и первого tag-release; до этого используйте локальную сборку выше.
+- Готовые bundles хранятся в репозитории; при изменении PoC разработчики пересобирают их командой `make package-openwrt` и коммитят вместе с исходным кодом.
 - RouteCraft не предоставляет VPN-аккаунт и не гарантирует доступность сторонних сайтов. Туннели и выходные IP принадлежат выбранному вами провайдеру/серверу.

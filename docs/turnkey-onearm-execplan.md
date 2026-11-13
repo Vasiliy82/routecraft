@@ -21,7 +21,7 @@ Do not modify the live physical router or R28S as part of this plan. Implement a
 
 ## Scope and design
 
-The public bootstrap is the only file fetched directly from the repository branch. It downloads a versioned GitHub Release bundle by `uname -m`, verifies the published SHA256 sidecar, extracts to a temporary directory, then starts the packaged helper. `install.sh --install` detects `apk` or `opkg` and installs only required packages (`sing-box`, `curl`, `ca-bundle`, `ip-full`, `nftables-json`, and `kmod-nft-tproxy`) using the router's configured OpenWrt feeds. It must not modify feeds or upgrade the firmware. Package availability and the embedded Tailscale endpoint are checked before activation.
+The public bootstrap selects a prebuilt bundle from `poc/bundles/` in the repository branch using `uname -m`, verifies its SHA256 sidecar, extracts to a temporary directory, then starts the packaged helper. No GitHub Release is required. `install.sh --install` detects `apk` or `opkg` and installs only required packages (`sing-box`, `curl`, `ca-bundle`, `ip-full`, `nftables-json`, and `kmod-nft-tproxy`) using the router's configured OpenWrt feeds. It must not modify feeds or upgrade the firmware. Package availability and the embedded Tailscale endpoint are checked before activation.
 
 When RouteCraft itself installs sing-box, it disables the package's standalone procd service so only the RouteCraft service manages that process. It does not disable a pre-existing sing-box installation.
 
@@ -37,7 +37,7 @@ Package installation needs working DNS/internet and valid stock OpenWrt feeds. F
 
 ## Outcome
 
-The source now has a one-command bootstrap path and tag-based release pipeline. On VM2 (OpenWrt 25.12.6 x86_64), `--install` installed missing `sing-box` and kernel TPROXY dependencies from configured APK feeds, confirmed the embedded Tailscale endpoint, disabled the package's standalone sing-box service, and staged RouteCraft without enabling its service or changing the default route. On VM1, the staged bundle activated successfully; VM2 then confirmed Tailscale, VLESS, direct and block behavior through the one-arm gateway. The GitHub Release itself is not published yet; it will be created by pushing a `v*` tag after the repository is public.
+The source has a one-command bootstrap path. On VM2 (OpenWrt 25.12.6 x86_64), `--install` installed missing `sing-box` and kernel TPROXY dependencies from configured APK feeds, confirmed the embedded Tailscale endpoint, disabled the package's standalone sing-box service, and staged RouteCraft without enabling its service or changing the default route. On VM1, the staged bundle activated successfully; VM2 then confirmed Tailscale, VLESS, direct and block behavior through the one-arm gateway. Prebuilt bundles now live in `poc/bundles/` on `main`; optional tagged Releases are not part of the installation path.
 
 ## Change note
 

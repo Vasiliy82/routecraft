@@ -1,8 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$releaseDir = Join-Path $repo '.cache/releases'
 $pocDir = Join-Path $repo 'poc'
+$bundleDir = Join-Path $pocDir 'bundles'
+$stageRoot = Join-Path $repo '.cache/package-openwrt'
 $required = @(
     (Join-Path $pocDir 'install.sh'),
     (Join-Path $pocDir 'configure.sh'),
@@ -27,7 +28,8 @@ if (-not $tar) {
     throw 'tar.exe is required to create .tar.gz bundles.'
 }
 
-New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
+New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 $targets = @(
     @{ Name = 'amd64'; GOARCH = 'amd64'; GOARM = '' },
     @{ Name = 'arm64'; GOARCH = 'arm64'; GOARM = '' },
@@ -45,7 +47,10 @@ try {
     $env:GOOS = 'linux'
     $env:CGO_ENABLED = '0'
     foreach ($target in $targets) {
-        $stage = Join-Path $releaseDir ".stage-$($target.Name)"
+        $stage = Join-Path $stageRoot ".stage-$($target.Name)"
+        if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
+        }
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'bin') | Out-Null
         $env:GOARCH = $target.GOARCH
@@ -66,7 +71,7 @@ try {
         }
         [System.IO.File]::WriteAllText((Join-Path $stage 'TARGET_ARCH'), $target.Name, [System.Text.Encoding]::ASCII)
 
-        $bundle = Join-Path $releaseDir "routecraft-poc-openwrt-$($target.Name).tar.gz"
+        $bundle = Join-Path $bundleDir "routecraft-poc-openwrt-$($target.Name).tar.gz"
         if (Test-Path -LiteralPath $bundle) {
             Remove-Item -LiteralPath $bundle -Force
         }
