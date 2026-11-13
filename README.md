@@ -28,7 +28,7 @@ uclient-fetch -4 -T 8 -O /dev/null https://raw.githubusercontent.com/Vasiliy82/r
 uclient-fetch -4 -O /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
 ```
 
-Инсталлятор скачает подходящий bundle, проверит контрольную сумму, установит недостающие пакеты из настроенных OpenWrt feeds и запустит мастер. Мастер спросит параметры туннелей и попросит отдельно подтвердить активацию. Первый Release появится после публикации репозитория и push тега вида `v0.1.0`; до этого используйте сборку и установку из [руководства](docs/install.md#установка-до-первого-release).
+Инсталлятор скачает подходящий bundle, проверит контрольную сумму, установит недостающие пакеты из настроенных OpenWrt feeds и запустит мастер. Мастер спросит параметры туннелей и попросит отдельно подтвердить активацию. Release bundles публикуются GitHub Actions при отправке тега вида `v0.1.0`. Если ещё нет подходящего Release, используйте сборку и установку из [руководства](docs/install.md#установка-до-первого-release).
 
 ## Для разработчиков
 

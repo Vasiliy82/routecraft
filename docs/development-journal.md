@@ -176,3 +176,9 @@
 - Сделано: по разрешению пользователя проверил сеть и установщик на OpenWrt. На устройстве не было доступа в интернет; после его восстановления bootstrap скачался. Затем выполнен `install.sh --install`, без активации маршрутизации RouteCraft.
 - Проверка: после восстановления доступа `uclient-fetch -4` скачал bootstrap с HTTP 200. Bundle amd64 прошёл SHA256; preflight до установки корректно сообщил отсутствующие зависимости и TPROXY kernel support. `--install` поставил `sing-box 1.13.21`, `curl`, `ip-full`, `kmod-nf-tproxy`, `kmod-nft-tproxy`; повторный `--check` подтвердил все зависимости, embedded Tailscale endpoint и поддержку TPROXY. После установки осталось 23.6 MiB. RouteCraft service/process, policy table и nftables правила не активны.
 - Вывод: bootstrap требует интернет-доступ на самом устройстве; инструкция теперь предлагает проверить связь до запуска. Публичный GitHub Release ещё не опубликован, поэтому готовый bootstrap пока не скачает bundle из `releases/latest`. RouteCraft не настроен и не активирован.
+
+## 2026-11-14 — первый GitHub Release и скачивание bundle
+
+- Сделано: создан тег `v0.1.0`; workflow собрал и опубликовал bootstrap, bundles amd64/arm64/armv7 и SHA256 sidecars.
+- Проверка: workflow завершился успешно. На OpenWrt прямой `github.com/.../releases/latest/download/...` timeoutился, но metadata через GitHub API и asset через API с `Accept: application/octet-stream` скачались. Bundle amd64 размером 1,071,585 байт прошёл `sha256sum -c`. Новая версия bootstrap использует API asset endpoint; `sh -n` на OpenWrt прошёл. Сам установщик повторно не запускался.
+- Вывод: Release опубликован. Для надёжной работы в сети, где прямой URL Release недоступен, bootstrap получает asset ID из публичной release metadata и скачивает asset через API/CDN redirect.
