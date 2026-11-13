@@ -139,3 +139,10 @@
 - Сделано: проверены DNS, HTTPS redirect и правила маршрутизации с VM2; просмотрен журнал трафика HTPC.
 - Проверка: DNS через VM1 вернул A/AAAA; `curl -4 -L https://chat.openai.com/` завершился HTTP 200 после redirect на `chatgpt.com`. VM1 зафиксировала запросы HTPC к `chat.openai.com`, `ws.chatgpt.com` и `ab.chatgpt.com`, все совпали с `geosite:openai` и пошли через Tailscale.
 - Вывод: доступ на сетевом уровне и выбор outbound исправны; полный рендер приложения в браузере HTPC этой проверкой не подтверждён.
+
+## 2026-11-13 — installer/configurator PoC
+
+- Сделано: добавлены `make package-openwrt`, сборка bundle linux/amd64, arm64, armv7 с SHA256, read-only `install.sh --check`, staging `--install`, интерактивный `configure.sh` и явная `--activate`. Параметризованы LAN interface, subnet и DNS. Установщик не меняет клиентский gateway и не останавливает чужой sing-box.
+- Проверка: `go test ./...` и три cross-build прошли; на VM1 OpenWrt 25.12.6 `sh -n` и preflight прошли, Tailscale endpoint и nft TPROXY expression подтверждены. Staging сохранил JSON и PID active sing-box. Wizard собрал candidate через локальный fixture последней VLESS-подписки, `sing-box check` прошёл, секреты получили 0600. После явной активации VM2 подтвердила `2ip.io` через Tailscale, `ifconfig.me` через VLESS, `icanhazip.com` direct и block `theuselessweb.com`; TPROXY counter достиг 177.
+- Сбой и исправление: первая активация показала в nft буквально `iifname != "$interface"`; heredoc был quoted и не подставлял LAN interface. Убран quoting, применён скрипт; правило стало `iifname != "br-lan"` и все четыре реальные проверки прошли. Публичный subscription URL один раз вернул HTTP 502; helper не активировал неполный кандидат, smoke wizard выполнен на сохранённом snapshot через временный localhost fixture.
+- Вывод: PoC bundle/helper работает на тестовой VM; это ещё не полное управление пакетами OpenWrt и не production transactional apply. Live TOP50 `.253` и R28S не менялись. Для первой ручной установки на TOP50 сначала изучить конфликт preflight по существующему mark/table/порту; архитектуру R28S узнать через `uname -m`.

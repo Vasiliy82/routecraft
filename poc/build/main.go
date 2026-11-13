@@ -25,15 +25,16 @@ func main() {
 	dataDir := flag.String("data", "/tmp/routecraft-poc", "rule-set and state directory")
 	control := flag.String("headscale", "https://hs1.vasiliy.me:9443", "Headscale URL")
 	exitNode := flag.String("exit-node", "100.64.0.8", "Tailscale exit node")
+	dnsUpstream := flag.String("dns", "192.168.80.254", "DNS upstream reachable from the gateway")
 	output := flag.String("output", "/tmp/routecraft-poc/sing-box.json", "generated sing-box configuration")
 	flag.Parse()
-	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *output); err != nil {
+	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output); err != nil {
 		fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
 		os.Exit(1)
 	}
 }
 
-func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, output string) error {
+func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string) error {
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
 		return err
@@ -110,7 +111,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	rules = append(rules, compiled.Route.Rules[1:]...)
 	config := map[string]any{
 		"log": map[string]any{"level": "debug"},
-		"dns": map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "local-dns", "server": "192.168.80.254"}}, "final": "local-dns", "reverse_mapping": true},
+		"dns": map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}}, "final": "local-dns", "reverse_mapping": true},
 		"inbounds": []any{
 			map[string]any{"type": "tproxy", "tag": "gateway", "listen": "0.0.0.0", "listen_port": 12345},
 			map[string]any{"type": "mixed", "tag": "test-direct", "listen": "127.0.0.1", "listen_port": 1080},

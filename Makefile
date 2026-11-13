@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: build test test-offline lint
+.PHONY: build test test-offline lint package-openwrt
 
 build:
 	$(GO) build -o bin/routecraft ./cmd/routecraft
@@ -14,3 +14,6 @@ test-offline:
 lint:
 	@test -z "$$(gofmt -l cmd internal tests/fixtures)" || (gofmt -l cmd internal tests/fixtures && exit 1)
 	$(GO) vet ./...
+
+package-openwrt:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-openwrt.ps1

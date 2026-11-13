@@ -2,10 +2,19 @@
 # Start the test-only RouteCraft PoC on an OpenWrt gateway.
 set -eu
 dir=${ROUTECRAFT_POC_DIR:-/tmp/routecraft-poc}
+site_env=${ROUTECRAFT_SITE_ENV:-$dir/site.env}
+if [ -f "$site_env" ]; then
+    . "$site_env"
+fi
 url_file=${ROUTECRAFT_SUBSCRIPTION_FILE:-$dir/subscription.url}
 key_file=${ROUTECRAFT_HEADSCALE_KEY_FILE:-$dir/headscale.key}
 control=${ROUTECRAFT_HEADSCALE_URL:-https://hs1.vasiliy.me:9443}
 exit_node=${ROUTECRAFT_EXIT_NODE:-100.64.0.8}
+dns_upstream=${ROUTECRAFT_DNS_UPSTREAM:-192.168.80.254}
+output="$dir/sing-box.json"
+if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
+    output="$dir/sing-box.candidate.json"
+fi
 
 mkdir -p "$dir/geosite" "$dir/geoip"
 umask 077
@@ -21,8 +30,12 @@ curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geoip/geoip-ru-blo
 
 "$dir/routecraft-poc-build" -policy "$dir/policy.yaml" -subscription "$dir/subscription.raw" \
     -headscale-key "$key_file" -data "$dir" -headscale "$control" -exit-node "$exit_node" \
-    -output "$dir/sing-box.json"
-sing-box check -c "$dir/sing-box.json"
+    -dns "$dns_upstream" -output "$output"
+sing-box check -c "$output"
+if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
+    echo "Candidate is ready at $output; active config and routes were not changed."
+    exit 0
+fi
 
 if [ -f "$dir/sing-box.pid" ]; then
     pid=$(cat "$dir/sing-box.pid")

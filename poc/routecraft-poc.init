@@ -9,6 +9,7 @@ dir=/etc/routecraft-poc
 start_service() {
 	[ -s "$dir/sing-box.json" ] || return 1
 	[ -x /usr/bin/sing-box ] || return 1
+	[ ! -f "$dir/site.env" ] || . "$dir/site.env"
 
 	sh "$dir/direct-gateway.sh"
 	sh "$dir/tproxy-gateway.sh"
