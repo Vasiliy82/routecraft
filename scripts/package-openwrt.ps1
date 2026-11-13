@@ -21,6 +21,9 @@ foreach ($path in $required) {
 
 $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
 if (-not $tar) {
+    $tar = Get-Command tar -ErrorAction SilentlyContinue
+}
+if (-not $tar) {
     throw 'tar.exe is required to create .tar.gz bundles.'
 }
 
@@ -71,16 +74,17 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Archive creation failed for $($target.Name)."
         }
-        $hashOutput = & certutil.exe -hashfile $bundle SHA256
-        if ($LASTEXITCODE -ne 0) {
-            throw "SHA256 calculation failed for $($target.Name)."
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::OpenRead($bundle)
+        try {
+            $digest = $sha256.ComputeHash($stream)
+            $hash = ([System.BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+            $sha256.Dispose()
         }
-        $hash = $hashOutput | Where-Object { $_ -match '^[0-9a-fA-F]{64}$' } | Select-Object -First 1
-        if (-not $hash) {
-            throw "Could not parse SHA256 output for $($target.Name)."
-        }
-        $hash = $hash.ToLowerInvariant()
-        Set-Content -LiteralPath "$bundle.sha256" -Value "$hash  $(Split-Path -Leaf $bundle)"
+        $checksumLine = [System.Text.Encoding]::ASCII.GetBytes("$hash  $(Split-Path -Leaf $bundle)`n")
+        [System.IO.File]::WriteAllBytes("$bundle.sha256", $checksumLine)
         Write-Output "Built $bundle ($hash)"
     }
 } finally {

@@ -1,5 +1,7 @@
 # Build an OpenWrt install and configuration helper
 
+This first installer phase is complete. Its initial assumption that runtime dependencies were preinstalled is superseded by `docs/turnkey-onearm-execplan.md`, which adds dependency installation and the public GitHub bootstrap for the one-arm PoC.
+
 This ExecPlan is a living document. Maintain `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` as work proceeds, following the ExecPlan requirements in the local `execplans` skill.
 
 ## Purpose / Big Picture

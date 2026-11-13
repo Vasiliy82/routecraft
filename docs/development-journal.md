@@ -146,3 +146,21 @@
 - Проверка: `go test ./...` и три cross-build прошли; на VM1 OpenWrt 25.12.6 `sh -n` и preflight прошли, Tailscale endpoint и nft TPROXY expression подтверждены. Staging сохранил JSON и PID active sing-box. Wizard собрал candidate через локальный fixture последней VLESS-подписки, `sing-box check` прошёл, секреты получили 0600. После явной активации VM2 подтвердила `2ip.io` через Tailscale, `ifconfig.me` через VLESS, `icanhazip.com` direct и block `theuselessweb.com`; TPROXY counter достиг 177.
 - Сбой и исправление: первая активация показала в nft буквально `iifname != "$interface"`; heredoc был quoted и не подставлял LAN interface. Убран quoting, применён скрипт; правило стало `iifname != "br-lan"` и все четыре реальные проверки прошли. Публичный subscription URL один раз вернул HTTP 502; helper не активировал неполный кандидат, smoke wizard выполнен на сохранённом snapshot через временный localhost fixture.
 - Вывод: PoC bundle/helper работает на тестовой VM; это ещё не полное управление пакетами OpenWrt и не production transactional apply. Live TOP50 `.253` и R28S не менялись. Для первой ручной установки на TOP50 сначала изучить конфликт preflight по существующему mark/table/порту; архитектуру R28S узнать через `uname -m`.
+
+## 2026-11-13 — реализация turnkey bootstrap
+
+- Сделано: добавлены публичный bootstrap, выбор архитектуры, проверка SHA256, установка недостающих runtime-пакетов через `apk`/`opkg`, ограничение на один интерфейс и GitHub Actions для tag-релизов.
+- Проверка: `go test ./...` и сборка трёх архитектур прошли; опубликованные sidecar используют Unix LF. Проверены package names в feeds OpenWrt 25.12.6.
+- Вывод: на первом чистом OpenWrt достаточно root SSH, интернета и штатных package feeds; действие пользователя ограничивается конфигурацией и явным подтверждением активации.
+
+## 2026-11-13 — тестирование чистой установки
+
+- Сделано: установщик научился ставить только отсутствующие пакеты и отключать штатную sing-box-службу только когда пакет sing-box поставил сам RouteCraft.
+- Проверка: на VM2 `--install` поставил `sing-box 1.13.21` и `kmod-nft-tproxy`; sing-box принял Tailscale endpoint, staging прошёл, RouteCraft service не включился, default route и policy rules остались прежними. Отмена activation оставила active config/service отсутствующими.
+- Вывод: отмена настройки безопасна для маршрутизации; установленные зависимости остаются на устройстве, но не перехватывают трафик.
+
+## 2026-11-13 — повторная проверка однорукого gateway
+
+- Сделано: новый bundle активирован на VM1 после staging; проверена отправка реального клиентского трафика с VM2.
+- Проверка: `2ip.io` → `135.136.176.24` (Tailscale), `ifconfig.me` → `2.26.4.220` (VLESS), `icanhazip.com` → `85.192.59.70` (direct), `theuselessweb.com` сброшен (`curl` exit 35). TPROXY counter — 394 пакета; mark `0x81` направлен в table 100.
+- Вывод: весь PoC проходит через один LAN-интерфейс. GitHub Release создастся после публикации репозитория и push tag вида `v0.1.0`; TOP50 `.253` и R28S не менялись.

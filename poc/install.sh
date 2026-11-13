@@ -16,7 +16,9 @@ case "$system_arch" in
 esac
 
 fail=0
+dependency_missing=0
 conflict=0
+topology_supported=1
 if [ ! -r /etc/openwrt_release ]; then
     echo 'ERROR: this helper targets OpenWrt.'
     fail=1
@@ -42,6 +44,7 @@ for command in sing-box curl ip nft sysctl; do
     else
         echo "MISSING: $command"
         fail=1
+        dependency_missing=1
     fi
 done
 if command -v sing-box >/dev/null 2>&1; then
@@ -65,7 +68,13 @@ fi
 lan_if=$(uci -q get network.lan.device 2>/dev/null || uci -q get network.lan.ifname 2>/dev/null || true)
 lan_if=${lan_if%% *}
 gateway=$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print $3}')
-echo "LAN interface: ${lan_if:-unknown}; upstream gateway: ${gateway:-unknown}"
+upstream_if=$(ip -4 route show default 2>/dev/null | awk 'NR==1 {for (i=1;i<=NF;i++) if ($i == "dev") print $(i+1)}')
+echo "LAN interface: ${lan_if:-unknown}; upstream: ${gateway:-unknown} via ${upstream_if:-unknown}"
+if [ -z "$lan_if" ] || [ -z "$upstream_if" ] || [ "$lan_if" != "$upstream_if" ]; then
+    echo 'UNSUPPORTED: this PoC expects one LAN interface for clients and upstream; WAN/LAN interface groups are not handled.'
+    topology_supported=0
+    fail=1
+fi
 
 owned=0
 if [ -x /etc/init.d/routecraft-poc ] && [ -s /etc/routecraft-poc/sing-box.json ]; then
@@ -98,6 +107,7 @@ EOF
 then
     echo 'MISSING: nftables cannot validate the TPROXY rule (kernel support/package may be absent).'
     fail=1
+    dependency_missing=1
 else
     echo 'OK: nftables TPROXY expression is supported.'
 fi
@@ -109,6 +119,49 @@ if command -v pidof >/dev/null 2>&1; then
 fi
 if [ "$conflict" -eq 0 ]; then
     echo 'No known RouteCraft mark/table/process conflict found.'
+fi
+
+# Only the mutating install mode may add required packages. Do it after the
+# read-only conflict checks and never run a blanket system upgrade.
+if [ "$mode" = --install ] && [ "$dependency_missing" -ne 0 ] && [ "${ROUTECRAFT_DEPS_ATTEMPTED:-0}" != 1 ]; then
+    [ "$(id -u)" = 0 ] || { echo 'ERROR: install requires root.'; exit 1; }
+    [ -r /etc/openwrt_release ] || { echo 'ERROR: dependency installation is supported only on OpenWrt.'; exit 1; }
+    [ "$detected_arch" != unsupported ] && [ "$target_arch" = "$detected_arch" ] || { echo 'ERROR: unsupported system or mismatched bundle.'; exit 1; }
+    [ "$topology_supported" -eq 1 ] || { echo 'ERROR: this package only supports the single-interface gateway topology.'; exit 1; }
+    [ "$conflict" -eq 0 ] || { echo 'ERROR: resolve routing conflicts before installing packages.'; exit 1; }
+    packages=''
+    for package in sing-box curl ca-bundle ip-full nftables-json kmod-nft-tproxy; do
+        if command -v apk >/dev/null 2>&1; then
+            apk info -e "$package" >/dev/null 2>&1 && continue
+        elif opkg status "$package" 2>/dev/null | grep -q '^Status:.* installed'; then
+            continue
+        fi
+        packages="$packages $package"
+    done
+    if [ -z "$packages" ]; then
+        echo 'Required packages are already installed; checking the runtime features.'
+    elif command -v apk >/dev/null 2>&1; then
+        echo "Installing missing RouteCraft packages with apk:$packages (no system upgrade)."
+        apk update || exit 1
+        apk add $packages || exit 1
+    elif command -v opkg >/dev/null 2>&1; then
+        echo "Installing missing RouteCraft packages with opkg:$packages (no system upgrade)."
+        opkg update || exit 1
+        opkg install $packages || exit 1
+    else
+        echo 'ERROR: neither apk nor opkg is available; cannot install dependencies.' >&2
+        exit 1
+    fi
+    case " $packages " in
+        *' sing-box '*)
+            if [ -x /etc/init.d/sing-box ]; then
+                echo 'Disabling the standalone sing-box service; RouteCraft manages the sing-box process.'
+                /etc/init.d/sing-box disable || exit 1
+            fi
+            ;;
+    esac
+    ROUTECRAFT_DEPS_ATTEMPTED=1 sh "$bundle_dir/install.sh" --install
+    exit $?
 fi
 
 case "$mode" in

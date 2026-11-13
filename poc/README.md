@@ -37,7 +37,13 @@ sh /tmp/routecraft-poc/start.sh
 
 ## Установка на OpenWrt
 
-Установщик и мастер конфигурации находятся в `poc/install.sh` и `poc/configure.sh`. Соберите переносимые bundle на Windows-хосте с Go:
+Установщик и мастер конфигурации находятся в `poc/install.sh` и `poc/configure.sh`. Для публичной установки после публикации первого GitHub Release достаточно выполнить на чистом OpenWrt от root:
+
+    wget -qO /tmp/routecraft-install.sh https://raw.githubusercontent.com/Vasiliy82/routecraft/main/poc/install-openwrt.sh && sh /tmp/routecraft-install.sh
+
+Bootstrap выберет bundle по `uname -m`, проверит SHA256 и скачает его из последнего GitHub Release. `install.sh --install` поставит недостающие `sing-box`, `curl`, `ca-bundle`, `ip-full`, `nftables-json` и `kmod-nft-tproxy` штатным `apk` (OpenWrt 25.12+) или `opkg` (старые релизы), без общего upgrade, затем подготовит файлы и запустит мастер. Для первой публикации поддерживаемого релиза нужно запушить tag вида `v0.1.0`; GitHub Actions соберёт и прикрепит три архитектурных bundle и их checksum.
+
+Этот этап поддерживает только однорукую схему: клиентский трафик входит и upstream уходит через один LAN-интерфейс. Если default route использует другой интерфейс, helper остановится; группы WAN/LAN появятся отдельным этапом. Для ручной сборки переносимого bundle на Windows-хосте с Go:
 
     make package-openwrt
 
@@ -51,7 +57,7 @@ sh /tmp/routecraft-poc/start.sh
     cd /tmp/routecraft-install
     sh ./install.sh --check
 
-`--check` только сообщает версию OpenWrt, архитектуру, зависимости, интерфейс, шлюз и очевидные конфликты; он не меняет файлы, маршруты, firewall или процессы. Если платформа совместима, `sh ./install.sh --install` сохранит существующую папку RouteCraft в `/root/routecraft-backup-*` и подготовит файлы в `/etc/routecraft-poc`, но не включит маршрутизацию. Требуются установленный `sing-box` с embedded Tailscale endpoint, `curl`, `ip-full`, nftables TPROXY и `sysctl`; установщик не заменяет пакеты OpenWrt и сообщает, если чего-то не хватает.
+`--check` только сообщает версию OpenWrt, архитектуру, зависимости, интерфейс, шлюз и очевидные конфликты; он не меняет файлы, маршруты, firewall или процессы. При `--install` helper ставит только необходимые пакеты через настроенные фиды OpenWrt, не запускает общий upgrade и проверяет наличие embedded Tailscale endpoint и nft TPROXY. Требуются интернет/DNS и рабочие фиды пакетов. При ошибке пакетного менеджера установка останавливается до активации.
 
 Запустите `sh /etc/routecraft-poc/configure.sh`. Мастер покажет обнаруженные LAN interface/subnet и DNS, спросит параметры Headscale/Exit Node, VLESS subscription URL и pre-auth key (секреты без echo), затем скачает SRS/подписку, создаст `sing-box.candidate.json` и проверит его командой `sing-box check`. Пока пользователь отдельно не подтвердит активацию, активная конфигурация и сеть не меняются. Перед запуском служба создаёт резервную копию; при ошибке запуска восстанавливает прежний конфиг.
 
