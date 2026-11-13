@@ -16,6 +16,7 @@ Do not modify live TOP50 `.253` or R28S. Implement and validate only against the
 - [x] (2026-11-13) Added a standalone public-repository bootstrap that selects the matching architecture bundle, verifies SHA256, stages the package, and starts the configuration wizard.
 - [x] (2026-11-13) Added tag-triggered GitHub release automation for the three bundles and checksum files.
 - [x] (2026-11-13) Validated package bootstrap, SHA256 on BusyBox, sing-box Tailscale feature, staging without activation, explicit activation/cancellation, and four real client routes on VM1/VM2; documented the results.
+- [x] (2026-11-14) Replayed the user-facing local-bundle installation instructions on VM2 through candidate generation and decline-activation; confirmed modes, active service and route state.
 - [x] (2026-11-13) Committed and pushed the completed one-arm turnkey stage to `origin/main`.
 
 ## Scope and design
