@@ -226,11 +226,21 @@ case "$mode" in
         cp -f "$destination/routecraft-poc.init" /etc/init.d/routecraft-poc
         chmod 755 /etc/init.d/routecraft-poc
         service_ok=0
-        if /etc/init.d/routecraft-poc enable && /etc/init.d/routecraft-poc restart; then
-            sleep 2
-            if /etc/init.d/routecraft-poc status >/dev/null 2>&1 && ps w | grep -F "$active" | grep -v grep >/dev/null; then
-                service_ok=1
+        echo "RouteCraft activation: previous service file present: $had_service."
+        echo 'RouteCraft activation: enabling the service.'
+        if /etc/init.d/routecraft-poc enable; then
+            echo 'RouteCraft activation: restarting the service via procd.'
+            if /etc/init.d/routecraft-poc restart; then
+                echo 'RouteCraft activation: restart returned; checking the service and process.'
+                sleep 2
+                if /etc/init.d/routecraft-poc status >/dev/null 2>&1 && ps w | grep -F "$active" | grep -v grep >/dev/null; then
+                    service_ok=1
+                fi
+            else
+                echo 'ERROR: RouteCraft service restart command failed.' >&2
             fi
+        else
+            echo 'ERROR: enabling the RouteCraft service failed.' >&2
         fi
         if [ "$service_ok" -ne 1 ]; then
             echo 'ERROR: service did not start; restoring the prior config.' >&2

@@ -7,6 +7,7 @@ USE_PROCD=1
 dir=/etc/routecraft-poc
 
 start_service() {
+	echo 'RouteCraft service: preparing to start network rules and sing-box.'
 	[ -s "$dir/sing-box.json" ] || return 1
 	[ -x /usr/bin/sing-box ] || return 1
 	[ ! -f "$dir/site.env" ] || . "$dir/site.env"
@@ -15,6 +16,7 @@ start_service() {
 	sh "$dir/direct-gateway.sh"
 	sh "$dir/tproxy-gateway.sh"
 
+	echo 'RouteCraft service: registering the sing-box process with procd.'
 	procd_open_instance
 	procd_set_param command /usr/bin/sing-box run -c "$dir/sing-box.json"
 	procd_set_param respawn 3600 5 5
@@ -24,8 +26,10 @@ start_service() {
 }
 
 stop_service() {
+	echo 'RouteCraft service: cleaning up previous RouteCraft network rules.'
 	nft delete table inet routecraft_tproxy 2>/dev/null || true
 	nft delete table inet routecraft_poc 2>/dev/null || true
 	ip rule del fwmark 0x81 lookup 100 2>/dev/null || true
 	ip route flush table 100 2>/dev/null || true
+	echo 'RouteCraft service: cleanup complete; procd will remove the previous service instance.'
 }

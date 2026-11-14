@@ -32,6 +32,22 @@ if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1
             exit_default=$address
             break
         done
+        # If this client has not selected an exit node, suggest the sole
+        # approved candidate, but never choose arbitrarily among several.
+        if [ -z "$exit_default" ]; then
+            ts_count=$(printf '%s' "$ts_status" | jsonfilter -e '@.Peer[@.ExitNodeOption=true].ExitNodeOption' 2>/dev/null | grep -c '^true$' || true)
+            if [ "$ts_count" = 1 ]; then
+                ts_addresses=$(printf '%s' "$ts_status" | jsonfilter -e '@.Peer[@.ExitNodeOption=true].TailscaleIPs[*]' 2>/dev/null || true)
+                for address in $ts_addresses; do
+                    address=${address%%/*}
+                    case "$address" in *:*) continue;; *[!0-9.]*|'') continue;; esac
+                    exit_default=$address
+                    break
+                done
+            elif [ "${ts_count:-0}" -gt 1 ]; then
+                echo 'Multiple Tailscale Exit Nodes are available; choose one using tailscale status.' >&2
+            fi
+        fi
     fi
 fi
 

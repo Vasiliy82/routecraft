@@ -34,6 +34,8 @@ case "$2" in
     '@.BackendState') printf '%s' "${MOCK_STATE:-}";;
     '@.ControlURL') printf '%s' "${MOCK_CONTROL:-}";;
     '@.ExitNodeStatus.TailscaleIPs[*]') printf '%s\n' "${MOCK_EXIT:-}";;
+    '@.Peer[@.ExitNodeOption=true].ExitNodeOption') printf '%s\n' "${MOCK_CANDIDATES:-}";;
+    '@.Peer[@.ExitNodeOption=true].TailscaleIPs[*]') printf '%s\n' "${MOCK_CANDIDATE_IPS:-}";;
     *) exit 1;;
 esac
 EOF
@@ -57,6 +59,19 @@ grep -q 'ROUTECRAFT_LAN_SUBNET=203.0.113.0/24' "$tmp/site/site.candidate.env"
 grep -q 'ROUTECRAFT_DNS_UPSTREAM=198.51.100.53' "$tmp/site/site.candidate.env"
 grep -q 'ROUTECRAFT_HEADSCALE_URL=https://control.example.invalid' "$tmp/site/site.candidate.env"
 grep -q 'ROUTECRAFT_EXIT_NODE=100.64.0.42' "$tmp/site/site.candidate.env"
+
+MOCK_EXIT= MOCK_CANDIDATES=true MOCK_CANDIDATE_IPS='fd00::2 100.64.0.43'
+export MOCK_EXIT MOCK_CANDIDATES MOCK_CANDIDATE_IPS
+printf '\n\n\n\n\nhttps://example.invalid/sub\nkey\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
+grep -q 'ROUTECRAFT_EXIT_NODE=100.64.0.43' "$tmp/site/site.candidate.env"
+grep -q 'Tailscale Exit Node name or IP \[100.64.0.43\]' "$tmp/err"
+
+MOCK_CANDIDATES='true
+true'
+export MOCK_CANDIDATES
+printf '\n\n\n\nexit.example\nhttps://example.invalid/sub\nkey\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
+grep -q 'Multiple Tailscale Exit Nodes are available' "$tmp/err"
+grep -q 'ROUTECRAFT_EXIT_NODE=exit.example' "$tmp/site/site.candidate.env"
 
 MOCK_STATE=Stopped
 export MOCK_STATE
