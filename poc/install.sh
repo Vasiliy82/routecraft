@@ -38,7 +38,7 @@ if [ ! -f "$builder" ]; then
     fail=1
 fi
 
-for command in sing-box curl ip nft sysctl; do
+for command in sing-box curl ip nft sysctl stty; do
     if command -v "$command" >/dev/null 2>&1; then
         echo "OK: $command found"
     else
@@ -130,7 +130,7 @@ if [ "$mode" = --install ] && [ "$dependency_missing" -ne 0 ] && [ "${ROUTECRAFT
     [ "$topology_supported" -eq 1 ] || { echo 'ERROR: this package only supports the single-interface gateway topology.'; exit 1; }
     [ "$conflict" -eq 0 ] || { echo 'ERROR: resolve routing conflicts before installing packages.'; exit 1; }
     packages=''
-    for package in sing-box curl ca-bundle ip-full nftables-json kmod-nft-tproxy; do
+    for package in sing-box curl ca-bundle coreutils-stty ip-full nftables-json kmod-nft-tproxy; do
         if command -v apk >/dev/null 2>&1; then
             apk info -e "$package" >/dev/null 2>&1 && continue
         elif opkg status "$package" 2>/dev/null | grep -q '^Status:.* installed'; then

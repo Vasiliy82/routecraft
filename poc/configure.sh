@@ -28,14 +28,23 @@ ask_secret() {
     printf '%s: ' "$label" >&2
     interactive=0
     if [ -t 0 ]; then
-        stty -echo
+        if ! command -v stty >/dev/null 2>&1; then
+            echo 'ERROR: stty is missing. Run the RouteCraft installer again to install its dependencies.' >&2
+            return 1
+        fi
+        stty -echo || { echo 'ERROR: could not disable terminal echo for secret input.' >&2; return 1; }
         interactive=1
     fi
-    IFS= read -r answer
+    if IFS= read -r answer; then
+        read_status=0
+    else
+        read_status=$?
+    fi
     if [ "$interactive" -eq 1 ]; then
-        stty echo
+        stty echo || { echo 'ERROR: could not restore terminal echo.' >&2; return 1; }
         printf '\n' >&2
     fi
+    [ "$read_status" -eq 0 ] || return "$read_status"
     printf '%s' "$answer"
 }
 

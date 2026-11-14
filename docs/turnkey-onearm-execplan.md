@@ -18,10 +18,11 @@ Do not modify the live physical router or R28S as part of this plan. Implement a
 - [x] (2026-11-13) Validated package bootstrap, SHA256 on BusyBox, sing-box Tailscale feature, staging without activation, explicit activation/cancellation, and four real client routes on VM1/VM2; documented the results.
 - [x] (2026-11-14) Replayed the user-facing local-bundle installation instructions on VM2 through candidate generation and decline-activation; confirmed modes, active service and route state.
 - [x] (2026-11-13) Committed and pushed the completed one-arm turnkey stage to `origin/main`.
+- [x] (2026-11-14) Fixed the first-run wizard failure caused by missing `stty`: added `coreutils-stty` to dependency detection/installation, made secret input restore terminal echo on read errors, validated shell syntax on OpenWrt, and rebuilt all bundles with valid SHA256 sidecars. Live device installation was not changed during this fix.
 
 ## Scope and design
 
-The public bootstrap selects a prebuilt bundle from `poc/bundles/` in the repository branch using `uname -m`, verifies its SHA256 sidecar, extracts to a temporary directory, then starts the packaged helper. No GitHub Release is required. `install.sh --install` detects `apk` or `opkg` and installs only required packages (`sing-box`, `curl`, `ca-bundle`, `ip-full`, `nftables-json`, and `kmod-nft-tproxy`) using the router's configured OpenWrt feeds. It must not modify feeds or upgrade the firmware. Package availability and the embedded Tailscale endpoint are checked before activation.
+The public bootstrap selects a prebuilt bundle from `poc/bundles/` in the repository branch using `uname -m`, verifies its SHA256 sidecar, extracts to a temporary directory, then starts the packaged helper. `install.sh --install` detects `apk` or `opkg` and installs only required packages (`sing-box`, `curl`, `ca-bundle`, `coreutils-stty`, `ip-full`, `nftables-json`, and `kmod-nft-tproxy`) using the router's configured OpenWrt feeds. It must not modify feeds or upgrade the firmware. Package availability and the embedded Tailscale endpoint are checked before activation.
 
 When RouteCraft itself installs sing-box, it disables the package's standalone procd service so only the RouteCraft service manages that process. It does not disable a pre-existing sing-box installation.
 
