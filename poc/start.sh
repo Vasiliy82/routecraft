@@ -6,11 +6,14 @@ site_env=${ROUTECRAFT_SITE_ENV:-$dir/site.env}
 if [ -f "$site_env" ]; then
     . "$site_env"
 fi
+export ROUTECRAFT_LAN_INTERFACE ROUTECRAFT_LAN_SUBNET
 url_file=${ROUTECRAFT_SUBSCRIPTION_FILE:-$dir/subscription.url}
 key_file=${ROUTECRAFT_HEADSCALE_KEY_FILE:-$dir/headscale.key}
-control=${ROUTECRAFT_HEADSCALE_URL:-https://hs1.vasiliy.me:9443}
-exit_node=${ROUTECRAFT_EXIT_NODE:-100.64.0.8}
-dns_upstream=${ROUTECRAFT_DNS_UPSTREAM:-192.168.80.254}
+control=${ROUTECRAFT_HEADSCALE_URL:-https://controlplane.tailscale.com}
+exit_node=${ROUTECRAFT_EXIT_NODE:-}
+dns_upstream=${ROUTECRAFT_DNS_UPSTREAM:-}
+[ -n "$exit_node" ] || { echo 'ERROR: set ROUTECRAFT_EXIT_NODE.' >&2; exit 1; }
+[ -n "$dns_upstream" ] || { echo 'ERROR: set ROUTECRAFT_DNS_UPSTREAM.' >&2; exit 1; }
 output="$dir/sing-box.json"
 if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
     output="$dir/sing-box.candidate.json"

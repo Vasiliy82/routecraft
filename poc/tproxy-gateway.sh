@@ -2,7 +2,7 @@
 # Attach the running PoC sing-box to transit IPv4 TCP/UDP on the LAN.
 set -eu
 
-interface=${ROUTECRAFT_LAN_INTERFACE:-br-lan}
+interface=${ROUTECRAFT_LAN_INTERFACE:-}
 case "$interface" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid LAN interface' >&2; exit 1;; esac
 ip link show dev "$interface" >/dev/null
 

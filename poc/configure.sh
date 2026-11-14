@@ -8,17 +8,38 @@ dir=${ROUTECRAFT_POC_DIR:-/etc/routecraft-poc}
 
 lan_if=$(uci -q get network.lan.device 2>/dev/null || uci -q get network.lan.ifname 2>/dev/null || true)
 lan_if=${lan_if%% *}
-lan_if=${lan_if:-br-lan}
-lan_subnet=$(ip -4 route show dev "$lan_if" scope link 2>/dev/null | awk 'NR==1 {print $1}')
-lan_subnet=${lan_subnet:-192.168.80.0/24}
 dns_default=$(uci -q get network.lan.dns 2>/dev/null | awk '{print $1}')
 dns_default=${dns_default:-$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print $3}')}
-dns_default=${dns_default:-192.168.80.254}
+
+# Only inspect the local client. Do not copy its state or credentials: sing-box
+# registers its own Tailscale device with the supplied pre-auth key.
+control_default=https://controlplane.tailscale.com
+exit_default=
+if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+    ts_status=$(tailscale status --json 2>/dev/null || true)
+    ts_state=$(printf '%s' "$ts_status" | jsonfilter -e '@.BackendState' 2>/dev/null || true)
+    if [ "$ts_state" = Running ]; then
+        if ts_prefs=$(tailscale debug prefs 2>/dev/null); then
+            ts_control=$(printf '%s' "$ts_prefs" | jsonfilter -e '@.ControlURL' 2>/dev/null || true)
+            [ -z "$ts_control" ] || control_default=$ts_control
+        else
+            echo 'WARNING: could not read the running Tailscale client control URL; verify the proposed URL.' >&2
+        fi
+        ts_addresses=$(printf '%s' "$ts_status" | jsonfilter -e '@.ExitNodeStatus.TailscaleIPs[*]' 2>/dev/null || true)
+        for address in $ts_addresses; do
+            address=${address%%/*}
+            case "$address" in *:*) continue;; *[!0-9.]*|'') continue;; esac
+            exit_default=$address
+            break
+        done
+    fi
+fi
 
 ask() {
     label=$1
     default=$2
-    printf '%s [%s]: ' "$label" "$default" >&2
+    if [ -n "$default" ]; then printf '%s [%s]: ' "$label" "$default" >&2
+    else printf '%s: ' "$label" >&2; fi
     IFS= read -r answer
     printf '%s' "${answer:-$default}"
 }
@@ -49,20 +70,22 @@ ask_secret() {
 }
 
 lan_if=$(ask 'LAN interface' "$lan_if")
+case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
+lan_subnet=$(ip -4 route show dev "$lan_if" scope link 2>/dev/null | awk 'NR==1 {print $1}')
 lan_subnet=$(ask 'LAN IPv4 subnet in CIDR form' "$lan_subnet")
 dns_upstream=$(ask 'DNS upstream IPv4' "$dns_default")
-headscale=$(ask 'Headscale control URL' 'https://hs1.vasiliy.me:9443')
-exit_node=$(ask 'Tailscale Exit Node name or IP' '100.64.0.8')
+headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
+exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
 subscription=$(ask_secret 'VLESS subscription URL')
-auth_key=$(ask_secret 'Headscale pre-auth key')
+auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key')
 
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
 case "$lan_subnet" in *[!0-9./]*|*/*/*|'') echo 'Invalid LAN subnet.' >&2; exit 1;; esac
 case "$dns_upstream" in *[!0-9.]*|*.*.*.*.*|'') echo 'Invalid DNS IPv4 address.' >&2; exit 1;; esac
-case "$headscale" in https://*[!a-zA-Z0-9.:/-]*|https://) echo 'Invalid Headscale URL.' >&2; exit 1;; esac
+case "$headscale" in https://*[!a-zA-Z0-9.:/-]*|https://|'') echo 'Invalid Tailscale or Headscale URL.' >&2; exit 1;; https://*) ;; *) echo 'Control URL must use HTTPS.' >&2; exit 1;; esac
 case "$exit_node" in *[!a-zA-Z0-9_.:-]*|'') echo 'Invalid Exit Node.' >&2; exit 1;; esac
 case "$subscription" in https://*|http://*) ;; *) echo 'Subscription URL must use HTTP or HTTPS.' >&2; exit 1;; esac
-[ -n "$auth_key" ] || { echo 'Headscale key cannot be empty.' >&2; exit 1; }
+[ -n "$auth_key" ] || { echo 'Tailscale or Headscale key cannot be empty.' >&2; exit 1; }
 ip link show dev "$lan_if" >/dev/null
 
 mkdir -p "$dir"

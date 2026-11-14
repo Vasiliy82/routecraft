@@ -2,8 +2,8 @@
 # Minimal one-arm IPv4 gateway for the RouteCraft test VM.
 set -eu
 
-interface=${ROUTECRAFT_LAN_INTERFACE:-br-lan}
-subnet=${ROUTECRAFT_LAN_SUBNET:-192.168.80.0/24}
+interface=${ROUTECRAFT_LAN_INTERFACE:-}
+subnet=${ROUTECRAFT_LAN_SUBNET:-}
 
 # Input is configuration, not shell code: reject strings outside these forms.
 case "$interface" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid LAN interface' >&2; exit 1;; esac

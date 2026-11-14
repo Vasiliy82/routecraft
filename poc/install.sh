@@ -53,7 +53,7 @@ if command -v sing-box >/dev/null 2>&1; then
     probe="/tmp/routecraft-tailscale-check.$$"
     trap 'rm -f "$probe"' EXIT HUP INT TERM
     cat >"$probe" <<'EOF'
-{"log":{"level":"error"},"endpoints":[{"type":"tailscale","tag":"probe","state_directory":"/tmp/routecraft-tailscale-probe","hostname":"routecraft-probe","control_url":"https://example.invalid","auth_key":"tskey-auth-test","exit_node":"100.64.0.8","accept_routes":false,"system_interface":false}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}
+{"log":{"level":"error"},"endpoints":[{"type":"tailscale","tag":"probe","state_directory":"/tmp/routecraft-tailscale-probe","hostname":"routecraft-probe","control_url":"https://example.invalid","auth_key":"tskey-auth-test","exit_node":"100.64.0.1","accept_routes":false,"system_interface":false}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}
 EOF
     if sing-box check -c "$probe" >/dev/null 2>&1; then
         echo 'OK: sing-box accepts the embedded Tailscale endpoint.'

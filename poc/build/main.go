@@ -21,11 +21,11 @@ import (
 func main() {
 	settingsPath := flag.String("policy", "/tmp/routecraft-poc/policy.yaml", "policy YAML")
 	subscriptionPath := flag.String("subscription", "/tmp/routecraft-poc/subscription.raw", "downloaded subscription")
-	keyPath := flag.String("headscale-key", "/tmp/routecraft-poc/headscale.key", "Headscale auth key")
+	keyPath := flag.String("headscale-key", "/tmp/routecraft-poc/headscale.key", "Tailscale or Headscale auth key")
 	dataDir := flag.String("data", "/tmp/routecraft-poc", "rule-set and state directory")
-	control := flag.String("headscale", "https://hs1.vasiliy.me:9443", "Headscale URL")
-	exitNode := flag.String("exit-node", "100.64.0.8", "Tailscale exit node")
-	dnsUpstream := flag.String("dns", "192.168.80.254", "DNS upstream reachable from the gateway")
+	control := flag.String("headscale", "https://controlplane.tailscale.com", "Tailscale or Headscale URL")
+	exitNode := flag.String("exit-node", "", "Tailscale exit node")
+	dnsUpstream := flag.String("dns", "", "DNS upstream reachable from the gateway")
 	output := flag.String("output", "/tmp/routecraft-poc/sing-box.json", "generated sing-box configuration")
 	flag.Parse()
 	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output); err != nil {
@@ -35,6 +35,9 @@ func main() {
 }
 
 func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string) error {
+	if strings.TrimSpace(control) == "" || strings.TrimSpace(exitNode) == "" || strings.TrimSpace(dnsUpstream) == "" {
+		return fmt.Errorf("control URL, exit node and DNS upstream are required")
+	}
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
 		return err
