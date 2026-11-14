@@ -67,7 +67,24 @@ try {
         }
 
         foreach ($path in $required) {
-            Copy-Item -LiteralPath $path -Destination $stage -Force
+            $destination = Join-Path $stage (Split-Path -Leaf $path)
+            if ($path.EndsWith('.sh') -or $path.EndsWith('.init')) {
+                # A Windows checkout or git archive may have CRLF even when the
+                # repository stores LF. OpenWrt /bin/sh requires Unix newlines.
+                $bytes = [System.IO.File]::ReadAllBytes($path)
+                $output = [System.IO.MemoryStream]::new()
+                try {
+                    for ($i = 0; $i -lt $bytes.Length; $i++) {
+                        if ($bytes[$i] -eq 13 -and $i + 1 -lt $bytes.Length -and $bytes[$i + 1] -eq 10) { continue }
+                        $output.WriteByte($bytes[$i])
+                    }
+                    [System.IO.File]::WriteAllBytes($destination, $output.ToArray())
+                } finally {
+                    $output.Dispose()
+                }
+            } else {
+                Copy-Item -LiteralPath $path -Destination $destination -Force
+            }
         }
         [System.IO.File]::WriteAllText((Join-Path $stage 'TARGET_ARCH'), $target.Name, [System.Text.Encoding]::ASCII)
 
@@ -79,6 +96,33 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Archive creation failed for $($target.Name)."
         }
+
+        # Verify the actual archive, not a text-normalized comparison or only
+        # the staging files. CRLF makes OpenWrt ash reject `set -eu`.
+        $rootPath = [System.IO.Path]::GetFullPath($stageRoot).TrimEnd('\') + '\'
+        $verifyPath = [System.IO.Path]::GetFullPath((Join-Path $stageRoot ('.verify-' + [guid]::NewGuid().ToString('N'))))
+        if (-not $verifyPath.StartsWith($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Bundle verification directory is outside the staging root.'
+        }
+        New-Item -ItemType Directory -Path $verifyPath | Out-Null
+        try {
+            & $tar.Source -xzf $bundle -C $verifyPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "Archive verification extraction failed for $($target.Name)."
+            }
+            foreach ($path in $required) {
+                if ($path.EndsWith('.sh') -or $path.EndsWith('.init')) {
+                    $scriptPath = Join-Path $verifyPath (Split-Path -Leaf $path)
+                    $scriptBytes = [System.IO.File]::ReadAllBytes($scriptPath)
+                    if ([Array]::IndexOf($scriptBytes, [byte]13) -ge 0) {
+                        throw "Archive contains CR in $(Split-Path -Leaf $path) for $($target.Name)."
+                    }
+                }
+            }
+        } finally {
+            Remove-Item -LiteralPath $verifyPath -Recurse -Force
+        }
+
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
         $stream = [System.IO.File]::OpenRead($bundle)
         try {
