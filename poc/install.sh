@@ -80,7 +80,7 @@ owned=0
 if [ -x /etc/init.d/routecraft-poc ] && [ -s /etc/routecraft-poc/sing-box.json ]; then
     owned=1
 fi
-if ip rule show 2>/dev/null | grep -q 'fwmark 0x81 lookup 100' && [ "$owned" -ne 1 ]; then
+if ip rule show 2>/dev/null | grep -E 'fwmark 0x81(/0x[0-9a-f]+)? ' | grep -q 'lookup 100' && [ "$owned" -ne 1 ]; then
     echo 'CONFLICT: fwmark 0x81/table 100 is already used outside the installed RouteCraft PoC.'
     conflict=1
 fi
