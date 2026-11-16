@@ -85,6 +85,26 @@ ask_secret() {
     printf '%s' "$answer"
 }
 
+echo 'OpenWrt dnsmasq rebind protection blocks DNS answers that point to private addresses.' >&2
+echo 'RouteCraft defaults to disabling it: public resolvers such as 1.1.1.1 and 8.8.8.8 also return private-address answers when requested, so this protection is not a reliable security boundary for our use case.' >&2
+printf 'Disable dnsmasq rebind protection now? [Y/n]: ' >&2
+IFS= read -r rebind_answer
+case "$rebind_answer" in
+    ''|y|Y|yes|YES)
+        if ! command -v uci >/dev/null 2>&1; then
+            echo 'ERROR: uci is unavailable; cannot update dnsmasq rebind protection.' >&2
+            exit 1
+        fi
+        uci set 'dhcp.@dnsmasq[0].rebind_protection=0'
+        uci commit dhcp
+        /etc/init.d/dnsmasq restart
+        echo 'Disabled dnsmasq rebind protection and restarted dnsmasq.' >&2
+        ;;
+    *)
+        echo 'Keeping the current dnsmasq rebind protection setting.' >&2
+        ;;
+esac
+
 lan_if=$(ask 'LAN interface' "$lan_if")
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
 lan_subnet=$(ip -4 route show dev "$lan_if" scope link 2>/dev/null | awk 'NR==1 {print $1}')
