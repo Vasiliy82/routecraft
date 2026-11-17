@@ -25,6 +25,9 @@ type Result struct {
 	Reason   string `json:"reason"`
 }
 
+// CategoryMatcher checks an available local rule set for one domain or IP.
+type CategoryMatcher func(kind, name, target string) (bool, error)
+
 type match int
 
 const (
@@ -36,6 +39,10 @@ const (
 // Evaluate never assumes that a category matched when no evaluator is available.
 // Unknown information in a higher-priority rule stops evaluation conservatively.
 func Evaluate(p policy.Policy, t Target) (Result, error) {
+	return EvaluateWithMatcher(p, t, nil)
+}
+
+func EvaluateWithMatcher(p policy.Policy, t Target, matcher CategoryMatcher) (Result, error) {
 	if t.Domain == "" && t.IP == "" && t.Port == 0 && t.Network == "" {
 		return Result{}, fmt.Errorf("supply at least one target field")
 	}
@@ -74,6 +81,20 @@ func Evaluate(p policy.Policy, t Target) (Result, error) {
 			switch kind {
 			case "geosite", "geoip":
 				outcome = unknown
+				subject := t.Domain
+				if kind == "geoip" {
+					subject = t.IP
+				}
+				if matcher != nil && subject != "" {
+					matched, err := matcher(kind, value, subject)
+					if err != nil {
+						return Result{}, fmt.Errorf("rule %q: category %s:%s: %w", rule.Name, kind, value, err)
+					}
+					outcome = no
+					if matched {
+						outcome = yes
+					}
+				}
 			case "domain", "domainsuffix", "domainkeyword":
 				if t.Domain == "" {
 					outcome = unknown

@@ -68,3 +68,38 @@ func TestCompileDoesNotWriteOnInvalidPolicy(t *testing.T) {
 		t.Fatalf("output created: %v", err)
 	}
 }
+
+func TestDBListFiltersLocalIndex(t *testing.T) {
+	dir := t.TempDir()
+	index := filepath.Join(dir, "index.json")
+	data := `{"version":1,"source":"fixture","revision":"abc","categories":[{"kind":"geosite","name":"cursor"},{"kind":"geoip","name":"telegram"}]}`
+	if err := os.WriteFile(index, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"db", "list", "--index", index, "--type", "geosite"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "geosite:cursor\n" {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestAtomicWritePreservesExistingOnPublicationFailure(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "existing-directory")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(destination, "keep")
+	if err := os.WriteFile(sentinel, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(destination, []byte("new")); err == nil {
+		t.Fatal("publishing over directory unexpectedly succeeded")
+	}
+	data, err := os.ReadFile(sentinel)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("existing state changed: %q, %v", data, err)
+	}
+}

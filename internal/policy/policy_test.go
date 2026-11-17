@@ -58,3 +58,16 @@ func TestSplitFilterCanonicalizesAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestCategoryNamesAllowPublishedVariants(t *testing.T) {
+	for _, filter := range []string{"geosite:acer@cn", "geosite:airchina@!cn", "geoip:telegram"} {
+		if _, _, err := SplitFilter(filter); err != nil {
+			t.Errorf("valid upstream category %q rejected: %v", filter, err)
+		}
+	}
+	for _, filter := range []string{"geosite:../escape", "geosite:a/b", "geoip:a b"} {
+		if _, _, err := SplitFilter(filter); err == nil {
+			t.Errorf("unsafe category %q accepted", filter)
+		}
+	}
+}

@@ -43,6 +43,7 @@ type Categories struct {
 }
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+var categoryPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.@!-]*$`)
 var domainLabelPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 func parse(data []byte, target any) error {
@@ -87,7 +88,7 @@ func SplitFilter(filter string) (string, string, error) {
 	}
 	switch kind {
 	case "geosite", "geoip":
-		if !namePattern.MatchString(value) {
+		if !categoryPattern.MatchString(value) {
 			return "", "", fmt.Errorf("invalid category %q", value)
 		}
 	case "domain", "domainsuffix":
