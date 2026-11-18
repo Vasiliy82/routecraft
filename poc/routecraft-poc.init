@@ -11,7 +11,7 @@ start_service() {
 	[ -s "$dir/sing-box.json" ] || return 1
 	[ -x /usr/bin/sing-box ] || return 1
 	[ ! -f "$dir/site.env" ] || . "$dir/site.env"
-	export ROUTECRAFT_LAN_INTERFACE ROUTECRAFT_LAN_SUBNET
+	export ROUTECRAFT_LAN_INTERFACE ROUTECRAFT_LAN_SUBNET ROUTECRAFT_WAN_INTERFACE
 
 	sh "$dir/direct-gateway.sh" || return 1
 	sh "$dir/tproxy-gateway.sh" || return 1

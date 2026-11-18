@@ -18,7 +18,6 @@ esac
 fail=0
 dependency_missing=0
 conflict=0
-topology_supported=1
 if [ ! -r /etc/openwrt_release ]; then
     echo 'ERROR: this helper targets OpenWrt.'
     fail=1
@@ -58,8 +57,7 @@ EOF
     if sing-box check -c "$probe" >/dev/null 2>&1; then
         echo 'OK: sing-box accepts the embedded Tailscale endpoint.'
     else
-        echo 'MISSING: sing-box with embedded Tailscale endpoint support.'
-        fail=1
+        echo 'WARNING: this sing-box does not accept the embedded Tailscale endpoint; candidates using it cannot be activated.'
     fi
     rm -f "$probe"
     trap - EXIT HUP INT TERM
@@ -71,17 +69,30 @@ gateway=$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print $3}')
 upstream_if=$(ip -4 route show default 2>/dev/null | awk 'NR==1 {for (i=1;i<=NF;i++) if ($i == "dev") print $(i+1)}')
 echo "LAN interface: ${lan_if:-unknown}; upstream: ${gateway:-unknown} via ${upstream_if:-unknown}"
 if [ -z "$lan_if" ] || [ -z "$upstream_if" ] || [ "$lan_if" != "$upstream_if" ]; then
-    echo 'UNSUPPORTED: this PoC expects one LAN interface for clients and upstream; WAN/LAN interface groups are not handled.'
-    topology_supported=0
-    fail=1
+    echo 'WARNING: the active PoC still requires a single LAN interface for clients and upstream; staging is allowed, activation is not.'
+    [ "$mode" != --activate ] || fail=1
 fi
 
 owned=0
 if [ -x /etc/init.d/routecraft-poc ] && [ -s /etc/routecraft-poc/sing-box.json ]; then
     owned=1
 fi
-if ip rule show 2>/dev/null | grep -E 'fwmark 0x81(/0x[0-9a-f]+)? ' | grep -q 'lookup 100' && [ "$owned" -ne 1 ]; then
-    echo 'CONFLICT: fwmark 0x81/table 100 is already used outside the installed RouteCraft PoC.'
+numeric_rules=$(ip -j -N rule show 2>/dev/null) || { echo 'ERROR: cannot inspect numeric policy-routing rules.'; numeric_rules=; fail=1; }
+rules_safe=0
+routes_safe=0
+numeric_routes=$(ip -j -N -4 route show table all 2>/dev/null) || { echo 'ERROR: cannot inspect numeric routing tables.'; numeric_routes=; fail=1; }
+if [ "$owned" -eq 1 ]; then
+    owned_lan=$(sed -n 's/^ROUTECRAFT_LAN_INTERFACE=//p' /etc/routecraft-poc/site.env 2>/dev/null || true)
+    case "$owned_lan" in *[!a-zA-Z0-9_.-]*|'') ;; *)
+        if printf '%s\n' "$numeric_rules" | "$builder" -check-routing-rules /dev/stdin -owned-lan "$owned_lan" >/dev/null 2>&1; then rules_safe=1; fi
+        if printf '%s\n' "$numeric_routes" | "$builder" -check-routing-routes /dev/stdin -owned-lan "$owned_lan" >/dev/null 2>&1; then routes_safe=1; fi;;
+    esac
+else
+    if printf '%s\n' "$numeric_rules" | "$builder" -check-routing-rules /dev/stdin >/dev/null 2>&1; then rules_safe=1; fi
+    if printf '%s\n' "$numeric_routes" | "$builder" -check-routing-routes /dev/stdin >/dev/null 2>&1; then routes_safe=1; fi
+fi
+if [ "$rules_safe" -ne 1 ] || [ "$routes_safe" -ne 1 ]; then
+    echo 'CONFLICT: mark 0x81, routing table 100 or a rule pointing to it is already used outside the installed RouteCraft PoC.'
     conflict=1
 fi
 if nft list table inet routecraft_tproxy >/dev/null 2>&1 && [ "$owned" -ne 1 ]; then
@@ -127,7 +138,6 @@ if [ "$mode" = --install ] && [ "$dependency_missing" -ne 0 ] && [ "${ROUTECRAFT
     [ "$(id -u)" = 0 ] || { echo 'ERROR: install requires root.'; exit 1; }
     [ -r /etc/openwrt_release ] || { echo 'ERROR: dependency installation is supported only on OpenWrt.'; exit 1; }
     [ "$detected_arch" != unsupported ] && [ "$target_arch" = "$detected_arch" ] || { echo 'ERROR: unsupported system or mismatched bundle.'; exit 1; }
-    [ "$topology_supported" -eq 1 ] || { echo 'ERROR: this package only supports the single-interface gateway topology.'; exit 1; }
     [ "$conflict" -eq 0 ] || { echo 'ERROR: resolve routing conflicts before installing packages.'; exit 1; }
     packages=''
     for package in sing-box curl ca-bundle coreutils-stty ip-full nftables-json kmod-nft-tproxy; do
@@ -208,6 +218,22 @@ case "$mode" in
         printf 'This starts RouteCraft routing on this gateway. Type ACTIVATE to continue: '
         IFS= read -r confirmation
         [ "$confirmation" = ACTIVATE ] || { echo 'Activation cancelled; active config unchanged.'; exit 1; }
+        lock_dir="$destination/.update.lock"
+        mkdir "$lock_dir" 2>/dev/null || { echo 'ERROR: another RouteCraft update is running, or its lock needs inspection.' >&2; exit 1; }
+        printf '%s\n' "$$" >"$lock_dir/owner"
+        trap 'rm -f "$lock_dir/owner"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+        trap 'exit 1' HUP INT TERM
+        # The candidate may have changed while the confirmation was pending.
+        if [ -s "$candidate" ]; then sing-box check -c "$candidate"; else sing-box check -c "$active"; fi
+        staged_secrets=0
+        if [ -e "$destination/subscription.candidate.url" ] || [ -e "$destination/headscale.candidate.key" ]; then
+            [ -s "$candidate" ] && [ -f "$destination/candidate.sha256" ] &&
+                [ -f "$destination/subscription.candidate.url" ] && [ -f "$destination/headscale.candidate.key" ] &&
+                sha256sum -c "$destination/candidate.sha256" >/dev/null 2>&1 || {
+                    echo 'ERROR: candidate files changed or are incomplete; run the configuration wizard again.' >&2; exit 1;
+                }
+            staged_secrets=1
+        fi
         backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
         mkdir -p "$backup"
         had_config=0
@@ -219,16 +245,42 @@ case "$mode" in
         [ ! -s "$active" ] || cp -p "$active" "$backup/sing-box.json"
         [ ! -f /etc/init.d/routecraft-poc ] || cp -p /etc/init.d/routecraft-poc "$backup/routecraft-poc.init"
         [ ! -f "$destination/site.env" ] || cp -p "$destination/site.env" "$backup/site.env"
+        had_subscription=0
+        had_key=0
+        [ ! -f "$destination/subscription.url" ] || { had_subscription=1; cp -p "$destination/subscription.url" "$backup/subscription.url"; }
+        [ ! -f "$destination/headscale.key" ] || { had_key=1; cp -p "$destination/headscale.key" "$backup/headscale.key"; }
+        rebind_requested=0
+        rebind_changed=0
+        if [ -f "$destination/site.candidate.env" ] && grep -qx 'ROUTECRAFT_DISABLE_REBIND=1' "$destination/site.candidate.env" &&
+            [ "$(uci -q get 'dhcp.@dnsmasq[0].rebind_protection' 2>/dev/null || true)" != 0 ]; then
+            rebind_requested=1
+            [ -f /etc/config/dhcp ] || { echo 'ERROR: cannot back up the DHCP configuration.' >&2; exit 1; }
+            pending_dhcp=$(uci -q changes dhcp) || { echo 'ERROR: cannot inspect pending DHCP changes.' >&2; exit 1; }
+            [ -z "$pending_dhcp" ] || { echo 'ERROR: DHCP has uncommitted UCI changes; resolve them before activation.' >&2; exit 1; }
+            cp -p /etc/config/dhcp "$backup/dhcp"
+        fi
         if [ -s "$candidate" ]; then
             cp -p "$candidate" "$active"
         fi
         [ ! -s "$destination/site.candidate.env" ] || cp -p "$destination/site.candidate.env" "$destination/site.env"
+        if [ "$staged_secrets" -eq 1 ]; then
+            cp -p "$destination/subscription.candidate.url" "$destination/subscription.url"
+            cp -p "$destination/headscale.candidate.key" "$destination/headscale.key"
+        fi
         cp -f "$destination/routecraft-poc.init" /etc/init.d/routecraft-poc
         chmod 755 /etc/init.d/routecraft-poc
         service_ok=0
+        rebind_ok=1
+        if [ "$rebind_requested" -eq 1 ]; then
+            rebind_changed=1
+            if ! uci set 'dhcp.@dnsmasq[0].rebind_protection=0' || ! uci commit dhcp || ! /etc/init.d/dnsmasq restart; then
+                echo 'ERROR: updating dnsmasq failed; restoring previous configuration.' >&2
+                rebind_ok=0
+            fi
+        fi
         echo "RouteCraft activation: previous service file present: $had_service."
         echo 'RouteCraft activation: enabling the service.'
-        if /etc/init.d/routecraft-poc enable; then
+        if [ "$rebind_ok" -eq 1 ] && /etc/init.d/routecraft-poc enable; then
             echo 'RouteCraft activation: restarting the service via procd.'
             if /etc/init.d/routecraft-poc restart; then
                 echo 'RouteCraft activation: restart returned; checking the service and process.'
@@ -245,6 +297,11 @@ case "$mode" in
         if [ "$service_ok" -ne 1 ]; then
             echo 'ERROR: service did not start; restoring the prior config.' >&2
             /etc/init.d/routecraft-poc stop >/dev/null 2>&1 || true
+            if [ "$rebind_changed" -eq 1 ]; then
+                uci -q revert dhcp >/dev/null 2>&1 || true
+                cp -p "$backup/dhcp" /etc/config/dhcp
+                /etc/init.d/dnsmasq restart || echo 'ERROR: dnsmasq restart failed after restoring its configuration.' >&2
+            fi
             if [ "$had_config" -eq 1 ]; then
                 cp -p "$backup/sing-box.json" "$active"
             else
@@ -254,6 +311,10 @@ case "$mode" in
                 cp -p "$backup/site.env" "$destination/site.env"
             else
                 rm -f "$destination/site.env"
+            fi
+            if [ "$staged_secrets" -eq 1 ]; then
+                if [ "$had_subscription" -eq 1 ]; then cp -p "$backup/subscription.url" "$destination/subscription.url"; else rm -f "$destination/subscription.url"; fi
+                if [ "$had_key" -eq 1 ]; then cp -p "$backup/headscale.key" "$destination/headscale.key"; else rm -f "$destination/headscale.key"; fi
             fi
             if [ "$had_service" -eq 1 ]; then
                 cp -p "$backup/routecraft-poc.init" /etc/init.d/routecraft-poc

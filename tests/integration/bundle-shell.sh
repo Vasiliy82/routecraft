@@ -12,6 +12,10 @@ for name in configure.sh install.sh start.sh direct-gateway.sh tproxy-gateway.sh
     sh -n "$work/$name"
 done
 if env -i PATH="$PATH" ROUTECRAFT_POC_DIR="$work/empty" sh "$work/start.sh" >"$work/out" 2>&1; then
+    echo 'start.sh unexpectedly succeeded without DNS' >&2; exit 1
+fi
+grep -q 'ERROR: set ROUTECRAFT_DNS_UPSTREAM' "$work/out"
+if env -i PATH="$PATH" ROUTECRAFT_POC_DIR="$work/empty" ROUTECRAFT_DNS_UPSTREAM=192.0.2.53 sh "$work/start.sh" >"$work/out" 2>&1; then
     echo 'start.sh unexpectedly succeeded without an exit node' >&2; exit 1
 fi
 grep -q 'ERROR: set ROUTECRAFT_EXIT_NODE' "$work/out"

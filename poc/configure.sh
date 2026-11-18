@@ -15,6 +15,8 @@ dns_default=${dns_default:-$(ip -4 route show default 2>/dev/null | awk 'NR==1 {
 # registers its own Tailscale device with the supplied pre-auth key.
 control_default=https://controlplane.tailscale.com
 exit_default=
+ts_status=
+ts_state=
 if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
     ts_status=$(tailscale status --json 2>/dev/null || true)
     ts_state=$(printf '%s' "$ts_status" | jsonfilter -e '@.BackendState' 2>/dev/null || true)
@@ -56,7 +58,7 @@ ask() {
     default=$2
     if [ -n "$default" ]; then printf '%s [%s]: ' "$label" "$default" >&2
     else printf '%s: ' "$label" >&2; fi
-    IFS= read -r answer
+    IFS= read -r answer || return 1
     printf '%s' "${answer:-$default}"
 }
 
@@ -85,54 +87,166 @@ ask_secret() {
     printf '%s' "$answer"
 }
 
-echo 'OpenWrt dnsmasq rebind protection blocks DNS answers that point to private addresses.' >&2
-echo 'RouteCraft defaults to disabling it: public resolvers such as 1.1.1.1 and 8.8.8.8 also return private-address answers when requested, so this protection is not a reliable security boundary for our use case.' >&2
-printf 'Disable dnsmasq rebind protection now? [Y/n]: ' >&2
-IFS= read -r rebind_answer
-case "$rebind_answer" in
-    ''|y|Y|yes|YES)
-        if ! command -v uci >/dev/null 2>&1; then
-            echo 'ERROR: uci is unavailable; cannot update dnsmasq rebind protection.' >&2
-            exit 1
-        fi
-        uci set 'dhcp.@dnsmasq[0].rebind_protection=0'
-        uci commit dhcp
-        /etc/init.d/dnsmasq restart
-        echo 'Disabled dnsmasq rebind protection and restarted dnsmasq.' >&2
-        ;;
-    *)
-        echo 'Keeping the current dnsmasq rebind protection setting.' >&2
-        ;;
-esac
+# Only called after a newly installed client is explicitly selected for
+# registration. The system and embedded identities need separate keys if
+# those keys are single-use. Avoid putting the system key in process arguments.
+connect_new_system_tailscale() (
+    umask 077
+    system_key_file=$(mktemp /tmp/routecraft-ts-key.XXXXXX) || exit 1
+    trap 'rm -f "$system_key_file"' EXIT
+    trap 'exit 1' HUP INT TERM
+    printf '%s\n' "$system_key" >"$system_key_file"
+    ts_init=${ROUTECRAFT_TS_INIT:-/etc/init.d/tailscale}
+    [ -x "$ts_init" ] || { echo 'ERROR: Tailscale service is unavailable.' >&2; exit 1; }
+    "$ts_init" enable && "$ts_init" start &&
+        tailscale up --login-server="$system_control" --auth-key="file:$system_key_file" --accept-dns=false --accept-routes=false --timeout=30s
+)
 
-lan_if=$(ask 'LAN interface' "$lan_if")
-case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
+echo 'dnsmasq rebind protection can block DNS answers containing private addresses.' >&2
+printf 'Disable dnsmasq rebind protection during activation? [Y/n]: ' >&2
+IFS= read -r rebind_answer
+case "$rebind_answer" in ''|y|Y|yes|YES) disable_rebind=1;; *) disable_rebind=0;; esac
+echo 'The current dnsmasq setting remains unchanged while the candidate is prepared.' >&2
+
+echo 'Selectable devices (bridge ports and unsupported virtual devices are omitted):' >&2
+available_interfaces=$("$dir/routecraft-poc-build" -list-interfaces) || { echo 'ERROR: cannot list network devices.' >&2; exit 1; }
+[ -n "$available_interfaces" ] || { echo 'ERROR: no selectable network devices found.' >&2; exit 1; }
+printf '%s\n' "$available_interfaces" >&2
+if ! printf '%s\n' "$available_interfaces" | grep -Fx -- "$lan_if" >/dev/null; then lan_if=; fi
+while :; do
+    lan_if=$(ask 'LAN interface' "$lan_if") || { echo 'ERROR: interface input ended.' >&2; exit 1; }
+    case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') valid_interface=0;; *) valid_interface=1;; esac
+    if [ "$valid_interface" = 1 ] && "$dir/routecraft-poc-build" -check-interface "$lan_if" >/dev/null 2>&1; then break; fi
+    echo 'That device is unavailable or cannot be selected; choose one from the list.' >&2
+    lan_if=
+done
 lan_subnet=$(ip -4 route show dev "$lan_if" scope link 2>/dev/null | awk 'NR==1 {print $1}')
 lan_subnet=$(ask 'LAN IPv4 subnet in CIDR form' "$lan_subnet")
 dns_upstream=$(ask 'DNS upstream IPv4' "$dns_default")
-headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
-exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
-subscription=$(ask_secret 'VLESS subscription URL')
-auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key')
+first_install=0
+if [ ! -e "$dir/sing-box.json" ] && [ ! -e "$dir/site.env" ]; then first_install=1; fi
+headscale=
+exit_node=
+auth_key=
+if [ "$first_install" = 1 ]; then
+    if ! command -v tailscale >/dev/null 2>&1; then
+        printf 'Tailscale is not installed. Install it from the configured OpenWrt feed? (y/N): ' >&2
+        IFS= read -r install_ts
+        case "$install_ts" in
+            y|Y|yes|YES)
+                ts_installed=0
+                ts_existing_state=0
+                if [ -e /etc/config/tailscale ] || [ -e /etc/init.d/tailscale ] || [ -e /etc/tailscale/tailscaled.state ]; then ts_existing_state=1; fi
+                if command -v apk >/dev/null 2>&1; then
+                    if apk update && apk add tailscale; then ts_installed=1; else echo 'WARNING: Tailscale installation failed.' >&2; fi
+                elif command -v opkg >/dev/null 2>&1; then
+                    if opkg update && opkg install tailscale; then ts_installed=1; else echo 'WARNING: Tailscale installation failed.' >&2; fi
+                else
+                    echo 'WARNING: no supported OpenWrt package manager found.' >&2
+                fi
+                if [ "$ts_installed" = 1 ] && command -v tailscale >/dev/null 2>&1; then
+                    if [ "$ts_existing_state" = 1 ] || [ -e /etc/tailscale/tailscaled.state ]; then
+                        echo 'Existing Tailscale state was found; it will not be modified automatically.' >&2
+                    else
+                        echo 'Connecting creates a system Tailscale identity that remains even if RouteCraft activation is cancelled.' >&2
+                        echo 'Use separate authentication keys for the system and embedded identities if keys are single-use.' >&2
+                        printf 'Connect the newly installed system Tailscale client now? (y/N): ' >&2
+                        IFS= read -r connect_ts
+                        case "$connect_ts" in
+                            y|Y|yes|YES)
+                                system_control=$(ask 'Tailscale or Headscale control URL for the system client' "$control_default")
+                                case "$system_control" in https://*[!a-zA-Z0-9.:/-]*|https://|'') echo 'Invalid Tailscale or Headscale URL.' >&2; exit 1;; https://*) ;; *) echo 'Control URL must use HTTPS.' >&2; exit 1;; esac
+                                system_key=$(ask_secret 'System Tailscale pre-auth key')
+                                [ -n "$system_key" ] || { echo 'System Tailscale key cannot be empty.' >&2; exit 1; }
+                                if connect_new_system_tailscale; then control_default=$system_control; else echo 'WARNING: system Tailscale could not be connected; no Exit Node will be assumed.' >&2; fi
+                                system_key=
+                                ;;
+                        esac
+                    fi
+                fi
+                ;;
+        esac
+    fi
+    if command -v tailscale >/dev/null 2>&1; then
+        ts_status=$(tailscale status --json 2>/dev/null || true)
+    fi
+    candidates=$(printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin 2>/dev/null || true)
+    if [ -n "$candidates" ] && [ "$candidates" != '[]' ] && [ "$candidates" != null ]; then
+        echo 'Online approved Tailscale Exit Nodes (address and name):' >&2
+        printf '%s\n' "$candidates" >&2
+        printf 'Use a Tailscale Exit Node? [Y/n]: ' >&2
+        IFS= read -r use_ts
+        case "$use_ts" in
+            ''|y|Y|yes|YES)
+                if ! printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_default" >/dev/null 2>&1; then exit_default=; fi
+                while :; do
+                    exit_node=$(ask 'Exit Node address from the list' "$exit_default") || exit 1
+                    ts_status=$(tailscale status --json 2>/dev/null || true)
+                    if [ -n "$exit_node" ] && printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_node" >/dev/null 2>&1; then break; fi
+                    echo 'Exit Node is unavailable or not approved; choose an address from the list.' >&2
+                    exit_default=
+                done
+                headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
+                auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key')
+                ;;
+        esac
+    else
+        echo 'No online approved Exit Node was found; the initial Tailscale rule will be omitted.' >&2
+        echo 'If Tailscale was just installed, sign in and rerun the wizard to discover nodes.' >&2
+    fi
+else
+    headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
+    exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
+fi
+subscription=$(ask_secret 'VLESS subscription URL (optional on first install)')
+if [ "$first_install" != 1 ]; then auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key'); fi
 
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
 case "$lan_subnet" in *[!0-9./]*|*/*/*|'') echo 'Invalid LAN subnet.' >&2; exit 1;; esac
 case "$dns_upstream" in *[!0-9.]*|*.*.*.*.*|'') echo 'Invalid DNS IPv4 address.' >&2; exit 1;; esac
-case "$headscale" in https://*[!a-zA-Z0-9.:/-]*|https://|'') echo 'Invalid Tailscale or Headscale URL.' >&2; exit 1;; https://*) ;; *) echo 'Control URL must use HTTPS.' >&2; exit 1;; esac
-case "$exit_node" in *[!a-zA-Z0-9_.:-]*|'') echo 'Invalid Exit Node.' >&2; exit 1;; esac
-case "$subscription" in https://*|http://*) ;; *) echo 'Subscription URL must use HTTP or HTTPS.' >&2; exit 1;; esac
-[ -n "$auth_key" ] || { echo 'Tailscale or Headscale key cannot be empty.' >&2; exit 1; }
+if [ -n "$exit_node" ]; then
+    case "$headscale" in https://*[!a-zA-Z0-9.:/-]*|https://|'') echo 'Invalid Tailscale or Headscale URL.' >&2; exit 1;; https://*) ;; *) echo 'Control URL must use HTTPS.' >&2; exit 1;; esac
+    case "$exit_node" in *[!a-zA-Z0-9_.:-]*) echo 'Invalid Exit Node.' >&2; exit 1;; esac
+    [ -n "$auth_key" ] || { echo 'Tailscale or Headscale key cannot be empty.' >&2; exit 1; }
+fi
+case "$subscription" in
+    https://*|http://*) ;;
+    '') [ ! -e "$dir/sing-box.json" ] && [ ! -e "$dir/site.env" ] || { echo 'An existing installation requires a subscription; no active policy was changed.' >&2; exit 1; } ;;
+    *) echo 'Subscription URL must use HTTP or HTTPS.' >&2; exit 1;;
+esac
+if [ "$first_install" != 1 ] && [ -z "$exit_node" ]; then echo 'Invalid Exit Node.' >&2; exit 1; fi
 ip link show dev "$lan_if" >/dev/null
 
 mkdir -p "$dir"
 umask 077
-printf 'ROUTECRAFT_LAN_INTERFACE=%s\nROUTECRAFT_LAN_SUBNET=%s\nROUTECRAFT_DNS_UPSTREAM=%s\nROUTECRAFT_HEADSCALE_URL=%s\nROUTECRAFT_EXIT_NODE=%s\n' \
-    "$lan_if" "$lan_subnet" "$dns_upstream" "$headscale" "$exit_node" >"$dir/site.candidate.env"
-printf '%s\n' "$subscription" >"$dir/subscription.url"
-printf '%s\n' "$auth_key" >"$dir/headscale.key"
-chmod 600 "$dir/site.candidate.env" "$dir/subscription.url" "$dir/headscale.key"
+lock_dir="$dir/.update.lock"
+mkdir "$lock_dir" 2>/dev/null || { echo 'ERROR: another RouteCraft update is running, or its lock needs inspection.' >&2; exit 1; }
+printf '%s\n' "$$" >"$lock_dir/owner"
+trap 'rm -f "$lock_dir/owner" "$dir/candidate.sha256.tmp"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+trap 'exit 1' HUP INT TERM
+initial_optional=0
+if [ ! -e "$dir/sing-box.json" ] && [ ! -e "$dir/site.env" ]; then initial_optional=1; fi
+if [ -z "$subscription" ] && [ "$initial_optional" != 1 ]; then
+    echo 'ERROR: an existing installation requires a subscription; no active policy was changed.' >&2
+    exit 1
+fi
+if [ "$first_install" = 1 ] && [ "$initial_optional" != 1 ]; then
+    echo 'ERROR: an active installation appeared; rerun the wizard.' >&2; exit 1
+fi
+printf 'ROUTECRAFT_LAN_INTERFACE=%s\nROUTECRAFT_LAN_SUBNET=%s\nROUTECRAFT_DNS_UPSTREAM=%s\nROUTECRAFT_HEADSCALE_URL=%s\nROUTECRAFT_EXIT_NODE=%s\nROUTECRAFT_DISABLE_REBIND=%s\n' \
+    "$lan_if" "$lan_subnet" "$dns_upstream" "$headscale" "$exit_node" "$disable_rebind" >"$dir/site.candidate.env"
+printf '%s\n' "$subscription" >"$dir/subscription.candidate.url"
+printf '%s\n' "$auth_key" >"$dir/headscale.candidate.key"
+chmod 600 "$dir/site.candidate.env" "$dir/subscription.candidate.url" "$dir/headscale.candidate.key"
 
-ROUTECRAFT_POC_DIR="$dir" ROUTECRAFT_SITE_ENV="$dir/site.candidate.env" ROUTECRAFT_CONFIG_ONLY=1 sh "$dir/start.sh"
+ROUTECRAFT_POC_DIR="$dir" ROUTECRAFT_SITE_ENV="$dir/site.candidate.env" \
+    ROUTECRAFT_SUBSCRIPTION_FILE="$dir/subscription.candidate.url" ROUTECRAFT_HEADSCALE_KEY_FILE="$dir/headscale.candidate.key" \
+    ROUTECRAFT_CONFIG_ONLY=1 ROUTECRAFT_INITIAL_OPTIONAL_VPN="$initial_optional" ROUTECRAFT_LOCK_OWNER="$$" sh "$dir/start.sh"
+sha256sum "$dir/sing-box.candidate.json" "$dir/site.candidate.env" "$dir/subscription.candidate.url" "$dir/headscale.candidate.key" >"$dir/candidate.sha256.tmp"
+mv -f "$dir/candidate.sha256.tmp" "$dir/candidate.sha256"
+rm -f "$lock_dir/owner"
+rmdir "$lock_dir"
+trap - EXIT HUP INT TERM
 echo "Configuration candidate prepared. No active config, service, route, or firewall rule was changed."
 printf 'Activate it now? (y/N): '
 IFS= read -r answer

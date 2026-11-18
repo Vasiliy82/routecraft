@@ -2,21 +2,35 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vasiliy82/routecraft/internal/compiler"
+	"github.com/vasiliy82/routecraft/internal/dnsprobe"
+	"github.com/vasiliy82/routecraft/internal/netdevices"
+	"github.com/vasiliy82/routecraft/internal/openwrt"
 	"github.com/vasiliy82/routecraft/internal/policy"
+	"github.com/vasiliy82/routecraft/internal/routinginspect"
+	"github.com/vasiliy82/routecraft/internal/tailscalestatus"
 )
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func main() {
 	settingsPath := flag.String("policy", "/tmp/routecraft-poc/policy.yaml", "policy YAML")
@@ -27,16 +41,394 @@ func main() {
 	exitNode := flag.String("exit-node", "", "Tailscale exit node")
 	dnsUpstream := flag.String("dns", "", "DNS upstream reachable from the gateway")
 	output := flag.String("output", "/tmp/routecraft-poc/sing-box.json", "generated sing-box configuration")
+	omitInitial := flag.Bool("omit-unavailable-initial-vpn", false, "omit unavailable VPN rules from initial policy")
+	checkSubscription := flag.Bool("check-subscription", false, "validate a downloaded VLESS subscription without building a configuration")
+	listInterfaces := flag.Bool("list-interfaces", false, "list selectable Linux network devices")
+	checkInterface := flag.String("check-interface", "", "check whether a Linux network device is selectable")
+	exitNodes := flag.String("list-exit-nodes", "", "read local Tailscale status JSON and list online approved exit nodes")
+	checkExitNode := flag.String("check-exit-node", "", "validate an address against the supplied Tailscale status")
+	networkStatus := flag.String("network-status", "", "read OpenWrt network.interface dump from file")
+	interfaceDevice := flag.String("interface-device", "", "find logical interfaces for a network device")
+	dhcpStatus := flag.String("dhcp-status", "", "read UCI DHCP status JSON from file")
+	logicalInterface := flag.String("logical-interface", "", "find DHCP sections for a logical interface")
+	poolPrefix := flag.String("pool-prefix", "", "IPv4 LAN prefix for DHCP pool validation")
+	poolRouter := flag.String("pool-router", "", "router IPv4 address for DHCP pool validation")
+	poolStart := flag.Uint64("pool-start", 0, "DHCP pool starting offset")
+	poolSize := flag.Uint64("pool-size", 0, "number of DHCP pool addresses")
+	dhcpPlan := flag.String("dhcp-plan", "", "read JSON input and prepare a DHCP change plan without applying it")
+	uciPlan := flag.String("uci-dhcp-plan", "", "read a DHCP plan and prepare a scoped UCI request")
+	uciSection := flag.String("uci-section", "", "target UCI DHCP section")
+	uciSession := flag.String("uci-session-file", "", "file containing the scoped UCI session ID")
+	verifyPlan := flag.String("verify-dhcp-plan", "", "compare a restored UCI section with its saved snapshot")
+	uciBefore := flag.String("uci-before", "", "saved UCI section snapshot")
+	uciCurrent := flag.String("uci-current", "", "current UCI section snapshot")
+	checkDNS := flag.String("check-dns", "", "check an IP DNS listener over UDP and TCP")
+	dnsStatus := flag.String("dns-status", "", "inspect dnsmasq instances in a UCI status file")
+	dnsPlan := flag.String("dns-plan", "", "prepare a DNS binding plan from JSON input")
+	uciDNSPlan := flag.String("uci-dns-plan", "", "prepare a scoped UCI DNS request")
+	verifyDNSPlan := flag.String("verify-dns-plan", "", "compare DNS settings to a UCI snapshot")
+	routingRules := flag.String("check-routing-rules", "", "check JSON policy rules for reserved mark/table conflicts")
+	routingRoutes := flag.String("check-routing-routes", "", "check JSON routes in the reserved policy table")
+	ownedLAN := flag.String("owned-lan", "", "allow one exact existing RouteCraft rule on this LAN")
 	flag.Parse()
-	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output); err != nil {
+	if *routingRoutes != "" {
+		data, err := os.ReadFile(*routingRoutes)
+		if err == nil {
+			err = routinginspect.CheckRoutes(data, 100, *ownedLAN != "")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: routing table conflict or unreadable routes:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *routingRules != "" {
+		data, err := os.ReadFile(*routingRules)
+		if err == nil {
+			if *ownedLAN == "" {
+				err = routinginspect.Check(data, 0x81, 100)
+			} else {
+				err = routinginspect.CheckOwned(data, 0x81, 100, *ownedLAN)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: routing conflict or unreadable rules:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *dnsPlan != "" {
+		data, err := os.ReadFile(*dnsPlan)
+		var request struct {
+			Instances      []openwrt.DNSInstance `json:"instances"`
+			Logical        string                `json:"logical"`
+			Device         string                `json:"device"`
+			IPv4           string                `json:"ipv4"`
+			IPv6           string                `json:"ipv6"`
+			NoPortConflict bool                  `json:"no_port_conflict"`
+		}
+		if err == nil {
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			err = decoder.Decode(&request)
+		}
+		var ipv4, ipv6 netip.Addr
+		if err == nil {
+			ipv4, err = netip.ParseAddr(request.IPv4)
+		}
+		if err == nil {
+			ipv6, err = netip.ParseAddr(request.IPv6)
+		}
+		if err == nil {
+			var plan openwrt.DNSPlan
+			plan, err = openwrt.PlanDNS(request.Instances, request.Logical, request.Device, ipv4, ipv6, request.NoPortConflict)
+			if err == nil {
+				err = json.NewEncoder(os.Stdout).Encode(plan)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare DNS plan:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *uciDNSPlan != "" || *verifyDNSPlan != "" {
+		if *uciDNSPlan != "" && *verifyDNSPlan != "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: choose one DNS UCI operation")
+			os.Exit(1)
+		}
+		path := *uciDNSPlan
+		if *verifyDNSPlan != "" {
+			path = *verifyDNSPlan
+		}
+		data, err := os.ReadFile(path)
+		var plan openwrt.DNSPlan
+		if err == nil {
+			err = json.Unmarshal(data, &plan)
+		}
+		if err == nil && *verifyDNSPlan != "" {
+			var before, current []byte
+			before, err = os.ReadFile(*uciBefore)
+			if err == nil {
+				current, err = os.ReadFile(*uciCurrent)
+			}
+			if err == nil {
+				err = openwrt.VerifyDNSRestored(plan, before, current)
+			}
+			if err == nil {
+				fmt.Println("Touched DNS options match the saved snapshot.")
+			}
+		} else if err == nil {
+			var session []byte
+			session, err = os.ReadFile(*uciSession)
+			if err == nil {
+				var payload []byte
+				payload, err = openwrt.DNSUCIRequest(plan, strings.TrimSpace(string(session)))
+				if err == nil {
+					_, err = os.Stdout.Write(append(payload, '\n'))
+				}
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot process DNS UCI plan:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *dnsStatus != "" {
+		data, err := os.ReadFile(*dnsStatus)
+		if err == nil {
+			var instances []openwrt.DNSInstance
+			instances, err = openwrt.DNSInstances(data)
+			if err == nil {
+				err = json.NewEncoder(os.Stdout).Encode(instances)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect dnsmasq instances")
+			os.Exit(1)
+		}
+		return
+	}
+	if *checkDNS != "" {
+		addr, err := netip.ParseAddr(*checkDNS)
+		if err != nil || addr.IsUnspecified() || addr.IsMulticast() {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid DNS listener address")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := dnsprobe.Check(ctx, net.JoinHostPort(addr.String(), "53"), "example.com."); err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+			os.Exit(1)
+		}
+		fmt.Println("DNS listener answered over UDP and TCP.")
+		return
+	}
+	if *verifyPlan != "" || *uciBefore != "" || *uciCurrent != "" {
+		if *verifyPlan == "" || *uciBefore == "" || *uciCurrent == "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: plan and both UCI snapshots are required")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*verifyPlan)
+		var plan openwrt.DHCPPlan
+		if err == nil {
+			err = json.Unmarshal(data, &plan)
+		}
+		var before, current []byte
+		if err == nil {
+			before, err = os.ReadFile(*uciBefore)
+		}
+		if err == nil {
+			current, err = os.ReadFile(*uciCurrent)
+		}
+		if err == nil {
+			err = openwrt.VerifyDHCPRestored(plan, before, current)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: DHCP restoration not confirmed:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Touched DHCP options match the saved snapshot.")
+		return
+	}
+	if *uciPlan != "" || *uciSection != "" || *uciSession != "" {
+		if *uciPlan == "" || *uciSection == "" || *uciSession == "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: UCI plan, section and session are required")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*uciPlan)
+		var plan openwrt.DHCPPlan
+		if err == nil {
+			err = json.Unmarshal(data, &plan)
+		}
+		var session []byte
+		if err == nil {
+			session, err = os.ReadFile(*uciSession)
+		}
+		if err == nil {
+			var payload []byte
+			payload, err = openwrt.DHCPUCIRequest(plan, *uciSection, strings.TrimSpace(string(session)))
+			if err == nil {
+				_, err = os.Stdout.Write(append(payload, '\n'))
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare UCI request:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *dhcpPlan != "" {
+		data, err := os.ReadFile(*dhcpPlan)
+		var request struct {
+			Mode        string   `json:"mode"`
+			RA          string   `json:"ra"`
+			Backend     string   `json:"backend"`
+			Prefix      string   `json:"prefix"`
+			Router      string   `json:"router"`
+			DNS6        string   `json:"dns6"`
+			Start       uint32   `json:"start"`
+			Limit       uint32   `json:"limit"`
+			DHCPOptions []string `json:"dhcp_options"`
+		}
+		if err == nil {
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			err = decoder.Decode(&request)
+			if err == nil {
+				var extra any
+				if e := decoder.Decode(&extra); e != io.EOF {
+					err = fmt.Errorf("multiple JSON values are not supported")
+				}
+			}
+		}
+		var pool openwrt.IPv4Pool
+		var dns6 netip.Addr
+		if err == nil && request.Mode == "managed" {
+			pool.Prefix, err = netip.ParsePrefix(request.Prefix)
+			if err == nil {
+				pool.Router, err = netip.ParseAddr(request.Router)
+			}
+			if err == nil {
+				dns6, err = netip.ParseAddr(request.DNS6)
+			}
+			pool.Start, pool.Limit = request.Start, request.Limit
+		}
+		if err == nil {
+			var plan openwrt.DHCPPlan
+			plan, err = openwrt.PlanDHCP(request.Mode, request.RA, request.Backend, pool, dns6, request.DHCPOptions)
+			if err == nil {
+				err = json.NewEncoder(os.Stdout).Encode(plan)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare DHCP plan:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *poolPrefix != "" || *poolRouter != "" || *poolStart != 0 || *poolSize != 0 {
+		prefix, prefixErr := netip.ParsePrefix(*poolPrefix)
+		router, routerErr := netip.ParseAddr(*poolRouter)
+		if prefixErr != nil || routerErr != nil || *poolStart > 1<<32-1 || *poolSize > 1<<32-1 {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid DHCP pool input")
+			os.Exit(1)
+		}
+		pool := openwrt.IPv4Pool{Prefix: prefix, Router: router, Start: uint32(*poolStart), Limit: uint32(*poolSize)}
+		if err := pool.Validate(); err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+			os.Exit(1)
+		}
+		fmt.Println("DHCP pool is valid.")
+		return
+	}
+	if *dhcpStatus != "" || *logicalInterface != "" {
+		if *dhcpStatus == "" || *logicalInterface == "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: DHCP status and logical interface are required")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*dhcpStatus)
+		if err == nil {
+			var sections []openwrt.DHCPSection
+			sections, err = openwrt.DHCPSections(data, *logicalInterface)
+			if err == nil {
+				err = json.NewEncoder(os.Stdout).Encode(sections)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect DHCP sections")
+			os.Exit(1)
+		}
+		return
+	}
+	if *networkStatus != "" || *interfaceDevice != "" {
+		if *networkStatus == "" || *interfaceDevice == "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: network status and device are required")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*networkStatus)
+		if err == nil {
+			var interfaces []openwrt.LogicalInterface
+			interfaces, err = openwrt.InterfacesForDevice(data, *interfaceDevice)
+			if err == nil {
+				err = json.NewEncoder(os.Stdout).Encode(interfaces)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect OpenWrt interfaces")
+			os.Exit(1)
+		}
+		return
+	}
+	if *checkExitNode != "" && *exitNodes == "" {
+		fmt.Fprintln(os.Stderr, "routecraft-poc: Tailscale status file is required")
+		os.Exit(1)
+	}
+	if *exitNodes != "" {
+		data, err := os.ReadFile(*exitNodes)
+		if err == nil {
+			if *checkExitNode != "" {
+				var node tailscalestatus.Candidate
+				node, err = tailscalestatus.Select(data, *checkExitNode)
+				if err == nil {
+					err = json.NewEncoder(os.Stdout).Encode(node)
+				}
+			} else {
+				var nodes []tailscalestatus.Candidate
+				nodes, err = tailscalestatus.Candidates(data)
+				if err == nil {
+					err = json.NewEncoder(os.Stdout).Encode(nodes)
+				}
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect Tailscale status")
+			os.Exit(1)
+		}
+		return
+	}
+	if *listInterfaces || *checkInterface != "" {
+		devices, err := netdevices.ListWithVLAN("/sys/class/net", "/proc/net/vlan")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+			os.Exit(1)
+		}
+		for _, device := range devices {
+			if *checkInterface == device {
+				return
+			}
+			if *listInterfaces {
+				fmt.Println(device)
+			}
+		}
+		if *checkInterface != "" {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: interface is not selectable")
+			os.Exit(1)
+		}
+		return
+	}
+	if *checkSubscription {
+		data, err := os.ReadFile(*subscriptionPath)
+		if err == nil {
+			_, _, err = parseSubscription(data)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid VLESS subscription")
+			os.Exit(1)
+		}
+		fmt.Println("VLESS subscription contains supported nodes.")
+		return
+	}
+	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial); err != nil {
 		fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
 		os.Exit(1)
 	}
 }
 
-func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string) error {
-	if strings.TrimSpace(control) == "" || strings.TrimSpace(exitNode) == "" || strings.TrimSpace(dnsUpstream) == "" {
-		return fmt.Errorf("control URL, exit node and DNS upstream are required")
+func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string, omitInitial bool) error {
+	if strings.TrimSpace(dnsUpstream) == "" {
+		return fmt.Errorf("DNS upstream is required")
 	}
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -56,6 +448,34 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		case "через VPN subscription":
 			p.Rules[i].Outbound = "vpn-sub"
 		}
+	}
+	var nodes []map[string]any
+	var tags []string
+	if subscriptionPath != "" {
+		sub, err := os.ReadFile(subscriptionPath)
+		if err != nil {
+			return err
+		}
+		nodes, tags, err = parseSubscription(sub)
+		if err != nil {
+			return err
+		}
+	}
+	var key []byte
+	if exitNode != "" {
+		if control == "" || keyPath == "" {
+			return fmt.Errorf("control URL and key are required for Tailscale")
+		}
+		key, err = os.ReadFile(keyPath)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(key)) == "" {
+			return fmt.Errorf("Headscale key is empty")
+		}
+	}
+	if err := omitUnavailable(&p, len(nodes) > 0, len(key) > 0, omitInitial); err != nil {
+		return err
 	}
 	categories := policy.Categories{Version: 1, Categories: map[string]string{}}
 	for _, rule := range p.Rules {
@@ -83,51 +503,47 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	if err != nil {
 		return err
 	}
-	sub, err := os.ReadFile(subscriptionPath)
-	if err != nil {
-		return err
-	}
-	nodes, tags, err := parseSubscription(sub)
-	if err != nil {
-		return err
-	}
-	key, err := os.ReadFile(keyPath)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(string(key)) == "" {
-		return fmt.Errorf("Headscale key is empty")
-	}
 	compiled.Outbounds = append(compiled.Outbounds, nodes...)
-	compiled.Outbounds = append(compiled.Outbounds, map[string]any{
-		"type": "urltest", "tag": "vpn-sub", "outbounds": tags,
-		"url": "https://www.gstatic.com/generate_204", "interval": "5m", "tolerance": 100,
-	})
+	if len(nodes) > 0 {
+		compiled.Outbounds = append(compiled.Outbounds, map[string]any{
+			"type": "urltest", "tag": "vpn-sub", "outbounds": tags,
+			"url": "https://www.gstatic.com/generate_204", "interval": "5m", "tolerance": 100,
+		})
+	}
 	// Diagnostic listeners exercise each transport without changing the system route.
-	rules := []map[string]any{
-		{"inbound": []string{"test-vless"}, "action": "route", "outbound": "vpn-sub"},
-		{"inbound": []string{"test-exit"}, "action": "route", "outbound": "tailscale-exit"},
-		{"inbound": []string{"test-direct"}, "action": "route", "outbound": "direct"},
+	rules := []map[string]any{{"inbound": []string{"test-direct"}, "action": "route", "outbound": "direct"}}
+	inbounds := []any{
+		map[string]any{"type": "tproxy", "tag": "gateway", "listen": "0.0.0.0", "listen_port": 12345},
+		map[string]any{"type": "mixed", "tag": "test-direct", "listen": "127.0.0.1", "listen_port": 1080},
+	}
+	if len(nodes) > 0 {
+		rules = append(rules, map[string]any{"inbound": []string{"test-vless"}, "action": "route", "outbound": "vpn-sub"})
+		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": "test-vless", "listen": "127.0.0.1", "listen_port": 1081})
+	}
+	if len(key) > 0 {
+		rules = append(rules, map[string]any{"inbound": []string{"test-exit"}, "action": "route", "outbound": "tailscale-exit"})
+		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": "test-exit", "listen": "127.0.0.1", "listen_port": 1082})
 	}
 	// Sniff first so the test-only domain can be matched for transparent traffic.
 	rules = append(rules, compiled.Route.Rules[0])
 	rules = append(rules, compiled.Route.Rules[1:]...)
 	config := map[string]any{
-		"log": map[string]any{"level": "debug"},
-		"dns": map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}}, "final": "local-dns", "reverse_mapping": true},
-		"inbounds": []any{
-			map[string]any{"type": "tproxy", "tag": "gateway", "listen": "0.0.0.0", "listen_port": 12345},
-			map[string]any{"type": "mixed", "tag": "test-direct", "listen": "127.0.0.1", "listen_port": 1080},
-			map[string]any{"type": "mixed", "tag": "test-vless", "listen": "127.0.0.1", "listen_port": 1081},
-			map[string]any{"type": "mixed", "tag": "test-exit", "listen": "127.0.0.1", "listen_port": 1082},
-		},
+		"log":       map[string]any{"level": "debug"},
+		"dns":       map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}}, "final": "local-dns", "reverse_mapping": true},
+		"inbounds":  inbounds,
 		"outbounds": compiled.Outbounds,
-		"endpoints": []any{map[string]any{
-			"type": "tailscale", "tag": "tailscale-exit", "state_directory": filepath.Join(dataDir, "tailscale-state"),
+		"route":     map[string]any{"rules": rules, "rule_set": compiled.Route.RuleSet, "final": compiled.Route.Final, "default_domain_resolver": "local-dns"},
+	}
+	if len(key) > 0 {
+		stateDir := os.Getenv("ROUTECRAFT_TAILSCALE_STATE_DIR")
+		if stateDir == "" {
+			stateDir = filepath.Join(dataDir, "tailscale-state")
+		}
+		config["endpoints"] = []any{map[string]any{
+			"type": "tailscale", "tag": "tailscale-exit", "state_directory": stateDir,
 			"hostname": "routecraft-poc", "control_url": control, "auth_key": strings.TrimSpace(string(key)),
 			"exit_node": exitNode, "accept_routes": false, "exit_node_allow_lan_access": true, "system_interface": false,
-		}},
-		"route": map[string]any{"rules": rules, "rule_set": compiled.Route.RuleSet, "final": compiled.Route.Final, "default_domain_resolver": "local-dns"},
+		}}
 	}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -137,6 +553,27 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		return err
 	}
 	fmt.Printf("Generated PoC configuration with %d VLESS nodes and %d categories.\n", len(nodes), len(categories.Categories))
+	return nil
+}
+
+// Omission is deliberately opt-in and limited to the two named initial rules.
+// A custom rule or a default pointing to an unavailable VPN always fails.
+func omitUnavailable(p *policy.Policy, vless, tailscale, enabled bool) error {
+	filtered := make([]policy.Rule, 0, len(p.Rules))
+	for _, rule := range p.Rules {
+		missing := (rule.Outbound == "vpn-sub" && !vless) || (rule.Outbound == "tailscale-exit" && !tailscale)
+		if !missing {
+			filtered = append(filtered, rule)
+			continue
+		}
+		initial := (rule.Name == "vpn-sub" && rule.Outbound == "vpn-sub" && reflect.DeepEqual(rule.Filter, []string{"geosite:ru-blocked", "geoip:ru-blocked", "geosite:youtube", "geosite:telegram", "geoip:telegram", "geosite:whatsapp", "domain:ifconfig.me"})) ||
+			(rule.Name == "vpn-static" && rule.Outbound == "tailscale-exit" && reflect.DeepEqual(rule.Filter, []string{"geosite:openai", "geosite:cursor", "geosite:anthropic", "domain:2ip.io"}))
+		if !enabled || !initial || len(rule.Filter) == 0 {
+			return fmt.Errorf("rule %q requires unavailable outbound %q", rule.Name, rule.Outbound)
+		}
+		fmt.Fprintf(os.Stderr, "Omitting initial rule %q: %s is unavailable.\n", rule.Name, rule.Outbound)
+	}
+	p.Rules = filtered
 	return nil
 }
 
@@ -174,7 +611,7 @@ func parseSubscription(payload []byte) ([]map[string]any, []string, error) {
 			continue
 		}
 		uuid := u.User.Username()
-		if len(uuid) != 36 {
+		if !uuidPattern.MatchString(uuid) {
 			continue
 		}
 		query := u.Query()

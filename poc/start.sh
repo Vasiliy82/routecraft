@@ -2,39 +2,103 @@
 # Start the test-only RouteCraft PoC on an OpenWrt gateway.
 set -eu
 dir=${ROUTECRAFT_POC_DIR:-/tmp/routecraft-poc}
+umask 077
+mkdir -p "$dir"
+lock_dir="$dir/.update.lock"
+owns_lock=0
+if [ -n "${ROUTECRAFT_LOCK_OWNER:-}" ] && [ "$ROUTECRAFT_LOCK_OWNER" = "$PPID" ] &&
+   [ "$(cat "$lock_dir/owner" 2>/dev/null || true)" = "$ROUTECRAFT_LOCK_OWNER" ]; then
+    : # The calling wizard holds the same lock while creating its files.
+else
+    mkdir "$lock_dir" 2>/dev/null || { echo 'ERROR: another RouteCraft update is running, or its lock needs inspection.' >&2; exit 1; }
+    owns_lock=1
+    printf '%s\n' "$$" >"$lock_dir/owner"
+fi
+generation_tmp=
+candidate_tmp=
+subscription_tmp=
+trap 'if [ -n "$candidate_tmp" ]; then rm -f "$candidate_tmp"; fi; if [ -n "$subscription_tmp" ]; then rm -f "$subscription_tmp"; fi; if [ -n "$generation_tmp" ]; then rm -rf "$generation_tmp"; fi; if [ "$owns_lock" = 1 ]; then rm -f "$lock_dir/owner"; rmdir "$lock_dir" 2>/dev/null || true; fi' EXIT
+trap 'exit 1' HUP INT TERM
 site_env=${ROUTECRAFT_SITE_ENV:-$dir/site.env}
 if [ -f "$site_env" ]; then
     . "$site_env"
 fi
-export ROUTECRAFT_LAN_INTERFACE ROUTECRAFT_LAN_SUBNET
+export ROUTECRAFT_LAN_INTERFACE ROUTECRAFT_LAN_SUBNET ROUTECRAFT_WAN_INTERFACE
 url_file=${ROUTECRAFT_SUBSCRIPTION_FILE:-$dir/subscription.url}
 key_file=${ROUTECRAFT_HEADSCALE_KEY_FILE:-$dir/headscale.key}
 control=${ROUTECRAFT_HEADSCALE_URL:-https://controlplane.tailscale.com}
 exit_node=${ROUTECRAFT_EXIT_NODE:-}
 dns_upstream=${ROUTECRAFT_DNS_UPSTREAM:-}
-[ -n "$exit_node" ] || { echo 'ERROR: set ROUTECRAFT_EXIT_NODE.' >&2; exit 1; }
 [ -n "$dns_upstream" ] || { echo 'ERROR: set ROUTECRAFT_DNS_UPSTREAM.' >&2; exit 1; }
+initial_optional=${ROUTECRAFT_INITIAL_OPTIONAL_VPN:-0}
+if [ "$initial_optional" = 1 ]; then
+    [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ] && [ ! -e "$dir/sing-box.json" ] && [ ! -e "$dir/site.env" ] || {
+        echo 'ERROR: optional initial VPN mode is only available before first activation.' >&2; exit 1;
+    }
+else
+    [ -n "$exit_node" ] || { echo 'ERROR: set ROUTECRAFT_EXIT_NODE.' >&2; exit 1; }
+fi
 output="$dir/sing-box.json"
 if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
     output="$dir/sing-box.candidate.json"
 fi
 
-mkdir -p "$dir/geosite" "$dir/geoip"
-umask 077
-curl -fsSL --connect-timeout 5 --max-time 30 "$(cat "$url_file")" -o "$dir/subscription.raw"
+if [ "$initial_optional" = 1 ] && { [ -e "$dir/sing-box.json" ] || [ -e "$dir/site.env" ]; }; then
+    echo 'ERROR: active configuration appeared during setup.' >&2; exit 1
+fi
+mkdir -p "$dir/generations"
+generation_tmp=$(mktemp -d "$dir/generations/generation.XXXXXX")
+mkdir -p "$generation_tmp/geosite" "$generation_tmp/geoip"
+candidate_tmp=$(mktemp "$dir/.config.XXXXXX")
+# Download and validate in a private temporary file. A failed refresh must not
+# truncate the last usable subscription, even when the server returns HTTP 200
+# with an unsupported or malformed payload. Never include the URL in errors.
+subscription_path=
+subscription_url=
+[ ! -s "$url_file" ] || subscription_url=$(cat "$url_file")
+if [ -n "$subscription_url" ]; then
+    subscription_tmp=$(mktemp "$dir/.subscription.XXXXXX")
+    if curl -fLs --connect-timeout 5 --max-time 30 "$subscription_url" -o "$subscription_tmp" &&
+        "$dir/routecraft-poc-build" -check-subscription -subscription "$subscription_tmp"; then
+        subscription_path="$subscription_tmp"
+    else
+        echo 'WARNING: VLESS subscription could not be loaded or has no supported nodes; previous data was retained.' >&2
+        rm -f "$subscription_tmp"
+        subscription_tmp=
+    fi
+fi
+if [ -z "$subscription_path" ] && [ "$initial_optional" != 1 ]; then
+    echo 'ERROR: a valid VLESS subscription is required.' >&2
+    exit 1
+fi
 base=https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo
-for name in openai cursor anthropic youtube telegram whatsapp; do
-    curl -fsSL --connect-timeout 5 --max-time 30 "$base/geosite/$name.srs" -o "$dir/geosite/$name.srs"
-done
-curl -fsSL --connect-timeout 5 --max-time 30 "$base/geoip/telegram.srs" -o "$dir/geoip/telegram.srs"
+if [ "$initial_optional" != 1 ] || [ -n "$exit_node" ]; then
+    for name in openai cursor anthropic; do
+        curl -fsSL --connect-timeout 5 --max-time 30 "$base/geosite/$name.srs" -o "$generation_tmp/geosite/$name.srs"
+    done
+fi
 extra=https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box
-curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geosite/geosite-ru-blocked.srs" -o "$dir/geosite/ru-blocked.srs"
-curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geoip/geoip-ru-blocked.srs" -o "$dir/geoip/ru-blocked.srs"
+if [ "$initial_optional" != 1 ] || [ -n "$subscription_path" ]; then
+    for name in youtube telegram whatsapp; do
+        curl -fsSL --connect-timeout 5 --max-time 30 "$base/geosite/$name.srs" -o "$generation_tmp/geosite/$name.srs"
+    done
+    curl -fsSL --connect-timeout 5 --max-time 30 "$base/geoip/telegram.srs" -o "$generation_tmp/geoip/telegram.srs"
+    curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geosite/geosite-ru-blocked.srs" -o "$generation_tmp/geosite/ru-blocked.srs"
+    curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geoip/geoip-ru-blocked.srs" -o "$generation_tmp/geoip/ru-blocked.srs"
+fi
 
-"$dir/routecraft-poc-build" -policy "$dir/policy.yaml" -subscription "$dir/subscription.raw" \
-    -headscale-key "$key_file" -data "$dir" -headscale "$control" -exit-node "$exit_node" \
-    -dns "$dns_upstream" -output "$output"
-sing-box check -c "$output"
+set --
+if [ "$initial_optional" = 1 ]; then set -- -omit-unavailable-initial-vpn; fi
+ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-poc-build" "$@" -policy "$dir/policy.yaml" -subscription "$subscription_path" \
+    -headscale-key "$key_file" -data "$generation_tmp" -headscale "$control" -exit-node "$exit_node" \
+    -dns "$dns_upstream" -output "$candidate_tmp"
+sing-box check -c "$candidate_tmp"
+mv -f "$candidate_tmp" "$output"
+# The validated configuration refers to this immutable generation by path.
+generation_tmp=
+if [ -n "$subscription_tmp" ]; then
+    mv -f "$subscription_tmp" "$dir/subscription.raw"
+fi
 if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
     echo "Candidate is ready at $output; active config and routes were not changed."
     exit 0
