@@ -3,7 +3,7 @@
 # wired into installer activation; callers must hold the RouteCraft lock.
 set -eu
 mode=${1:-}
-dir=${ROUTECRAFT_POC_DIR:-/etc/routecraft-poc}
+dir=${ROUTECRAFT_DIR:-/etc/routecraft}
 state="$dir/.uci-dhcp-session"
 fail() { echo "ERROR: $*" >&2; exit 1; }
 [ "$(cat "$dir/.update.lock/owner" 2>/dev/null || true)" = "$PPID" ] || fail 'caller must hold the RouteCraft update lock'
@@ -39,7 +39,7 @@ case "$mode" in
         cp "$plan" "$state/plan"
         ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"dhcp\",\"read\"],[\"dhcp\",\"write\"]]}" >/dev/null
         ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" >"$state/before"
-        "$dir/routecraft-poc-build" -uci-dhcp-plan "$state/plan" -uci-section "$section" -uci-session-file "$state/session" >"$state/request"
+        "$dir/routecraft-build" -uci-dhcp-plan "$state/plan" -uci-section "$section" -uci-session-file "$state/session" >"$state/request"
         ubus call uci set "$(cat "$state/request")" >/dev/null
         if [ -n "$dns_plan" ]; then
             [ -s "$dns_plan" ] || fail 'DNS plan is missing'
@@ -49,7 +49,7 @@ case "$mode" in
             printf '%s\n' "$dns_section" >"$state/dns-section"
             cp "$dns_plan" "$state/dns-plan"
             ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$dns_section\"}" >"$state/dns-before"
-            "$dir/routecraft-poc-build" -uci-dns-plan "$state/dns-plan" -uci-session-file "$state/session" >"$state/request"
+            "$dir/routecraft-build" -uci-dns-plan "$state/dns-plan" -uci-session-file "$state/session" >"$state/request"
             ubus call uci set "$(cat "$state/request")" >/dev/null
         fi
         rm -f "$state/request"
@@ -106,9 +106,9 @@ case "$mode" in
                 fi
             fi
             ubus call session destroy "{\"ubus_rpc_session\":\"$verify_sid\"}" >/dev/null || fail 'could not close verification session'
-            "$dir/routecraft-poc-build" -verify-dhcp-plan "$state/plan" -uci-before "$state/before" -uci-current "$state/current" >/dev/null || fail 'DHCP rollback could not be confirmed'
+            "$dir/routecraft-build" -verify-dhcp-plan "$state/plan" -uci-before "$state/before" -uci-current "$state/current" >/dev/null || fail 'DHCP rollback could not be confirmed'
             if [ -e "$state/dns-plan" ]; then
-                "$dir/routecraft-poc-build" -verify-dns-plan "$state/dns-plan" -uci-before "$state/dns-before" -uci-current "$state/dns-current" >/dev/null || fail 'DNS rollback could not be confirmed'
+                "$dir/routecraft-build" -verify-dns-plan "$state/dns-plan" -uci-before "$state/dns-before" -uci-current "$state/dns-current" >/dev/null || fail 'DNS rollback could not be confirmed'
             fi
         fi
         ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null || fail 'could not close UCI session'

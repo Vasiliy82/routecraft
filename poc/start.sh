@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start the test-only RouteCraft PoC on an OpenWrt gateway.
 set -eu
-dir=${ROUTECRAFT_POC_DIR:-/tmp/routecraft-poc}
+dir=${ROUTECRAFT_DIR:-/tmp/routecraft}
 umask 077
 mkdir -p "$dir"
 lock_dir="$dir/.update.lock"
@@ -57,9 +57,14 @@ subscription_path=
 subscription_url=
 [ ! -s "$url_file" ] || subscription_url=$(cat "$url_file")
 if [ -n "$subscription_url" ]; then
+    case "$subscription_url" in
+        *[[:space:]]*) echo 'ERROR: subscription URL must be a single value.' >&2; exit 1 ;;
+    esac
     subscription_tmp=$(mktemp "$dir/.subscription.XXXXXX")
-    if curl -fLs --connect-timeout 5 --max-time 30 "$subscription_url" -o "$subscription_tmp" &&
-        "$dir/routecraft-poc-build" -check-subscription -subscription "$subscription_tmp"; then
+    subscription_config=$(printf '%s' "$subscription_url" | sed 's/[\\"]/\\&/g')
+    if printf 'url = "%s"\n' "$subscription_config" |
+        curl -q -fLs --proto '=http,https' --proto-redir '=http,https' --connect-timeout 5 --max-time 30 --config - -o "$subscription_tmp" &&
+        "$dir/routecraft-build" -check-subscription -subscription "$subscription_tmp"; then
         subscription_path="$subscription_tmp"
     else
         echo 'WARNING: VLESS subscription could not be loaded or has no supported nodes; previous data was retained.' >&2
@@ -89,10 +94,15 @@ fi
 
 set --
 if [ "$initial_optional" = 1 ]; then set -- -omit-unavailable-initial-vpn; fi
-ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-poc-build" "$@" -policy "$dir/policy.yaml" -subscription "$subscription_path" \
+ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-build" "$@" -policy "$dir/policy.yaml" -subscription "$subscription_path" \
     -headscale-key "$key_file" -data "$generation_tmp" -headscale "$control" -exit-node "$exit_node" \
     -dns "$dns_upstream" -output "$candidate_tmp"
 sing-box check -c "$candidate_tmp"
+if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" != 1 ] &&
+    { [ -f "$dir/dnsmasq-split.state" ] || [ -n "$(jsonfilter -i "$candidate_tmp" -e '@.inbounds[@.tag="routecraft-dns"].listen_port')" ]; }; then
+    echo 'ERROR: Split DNS configuration must be staged and activated with install.sh --activate.' >&2
+    exit 1
+fi
 mv -f "$candidate_tmp" "$output"
 # The validated configuration refers to this immutable generation by path.
 generation_tmp=

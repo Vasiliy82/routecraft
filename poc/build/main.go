@@ -33,14 +33,14 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func main() {
-	settingsPath := flag.String("policy", "/tmp/routecraft-poc/policy.yaml", "policy YAML")
-	subscriptionPath := flag.String("subscription", "/tmp/routecraft-poc/subscription.raw", "downloaded subscription")
-	keyPath := flag.String("headscale-key", "/tmp/routecraft-poc/headscale.key", "Tailscale or Headscale auth key")
-	dataDir := flag.String("data", "/tmp/routecraft-poc", "rule-set and state directory")
+	settingsPath := flag.String("policy", "/tmp/routecraft/policy.yaml", "policy YAML")
+	subscriptionPath := flag.String("subscription", "/tmp/routecraft/subscription.raw", "downloaded subscription")
+	keyPath := flag.String("headscale-key", "/tmp/routecraft/headscale.key", "Tailscale or Headscale auth key")
+	dataDir := flag.String("data", "/tmp/routecraft", "rule-set and state directory")
 	control := flag.String("headscale", "https://controlplane.tailscale.com", "Tailscale or Headscale URL")
 	exitNode := flag.String("exit-node", "", "Tailscale exit node")
 	dnsUpstream := flag.String("dns", "", "DNS upstream reachable from the gateway")
-	output := flag.String("output", "/tmp/routecraft-poc/sing-box.json", "generated sing-box configuration")
+	output := flag.String("output", "/tmp/routecraft/sing-box.json", "generated sing-box configuration")
 	omitInitial := flag.Bool("omit-unavailable-initial-vpn", false, "omit unavailable VPN rules from initial policy")
 	checkSubscription := flag.Bool("check-subscription", false, "validate a downloaded VLESS subscription without building a configuration")
 	listInterfaces := flag.Bool("list-interfaces", false, "list selectable Linux network devices")
@@ -63,6 +63,7 @@ func main() {
 	uciBefore := flag.String("uci-before", "", "saved UCI section snapshot")
 	uciCurrent := flag.String("uci-current", "", "current UCI section snapshot")
 	checkDNS := flag.String("check-dns", "", "check an IP DNS listener over UDP and TCP")
+	dnsProbeName := flag.String("dns-probe-name", "example.com.", "absolute name for the DNS listener check")
 	dnsStatus := flag.String("dns-status", "", "inspect dnsmasq instances in a UCI status file")
 	dnsPlan := flag.String("dns-plan", "", "prepare a DNS binding plan from JSON input")
 	uciDNSPlan := flag.String("uci-dns-plan", "", "prepare a scoped UCI DNS request")
@@ -77,7 +78,7 @@ func main() {
 			err = routinginspect.CheckRoutes(data, 100, *ownedLAN != "")
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: routing table conflict or unreadable routes:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: routing table conflict or unreadable routes:", err)
 			os.Exit(1)
 		}
 		return
@@ -92,7 +93,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: routing conflict or unreadable rules:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: routing conflict or unreadable rules:", err)
 			os.Exit(1)
 		}
 		return
@@ -127,14 +128,14 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare DNS plan:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: cannot prepare DNS plan:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *uciDNSPlan != "" || *verifyDNSPlan != "" {
 		if *uciDNSPlan != "" && *verifyDNSPlan != "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: choose one DNS UCI operation")
+			fmt.Fprintln(os.Stderr, "routecraft: choose one DNS UCI operation")
 			os.Exit(1)
 		}
 		path := *uciDNSPlan
@@ -170,7 +171,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot process DNS UCI plan:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: cannot process DNS UCI plan:", err)
 			os.Exit(1)
 		}
 		return
@@ -185,21 +186,26 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect dnsmasq instances")
+			fmt.Fprintln(os.Stderr, "routecraft: cannot inspect dnsmasq instances")
 			os.Exit(1)
 		}
 		return
 	}
 	if *checkDNS != "" {
-		addr, err := netip.ParseAddr(*checkDNS)
-		if err != nil || addr.IsUnspecified() || addr.IsMulticast() {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid DNS listener address")
+		endpoint, err := netip.ParseAddrPort(*checkDNS)
+		if err != nil {
+			var addr netip.Addr
+			addr, err = netip.ParseAddr(*checkDNS)
+			endpoint = netip.AddrPortFrom(addr, 53)
+		}
+		if err != nil || endpoint.Port() == 0 || endpoint.Addr().IsUnspecified() || endpoint.Addr().IsMulticast() {
+			fmt.Fprintln(os.Stderr, "routecraft: invalid DNS listener address")
 			os.Exit(1)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := dnsprobe.Check(ctx, net.JoinHostPort(addr.String(), "53"), "example.com."); err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+		if err := dnsprobe.Check(ctx, endpoint.String(), *dnsProbeName); err != nil {
+			fmt.Fprintln(os.Stderr, "routecraft:", err)
 			os.Exit(1)
 		}
 		fmt.Println("DNS listener answered over UDP and TCP.")
@@ -207,7 +213,7 @@ func main() {
 	}
 	if *verifyPlan != "" || *uciBefore != "" || *uciCurrent != "" {
 		if *verifyPlan == "" || *uciBefore == "" || *uciCurrent == "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: plan and both UCI snapshots are required")
+			fmt.Fprintln(os.Stderr, "routecraft: plan and both UCI snapshots are required")
 			os.Exit(1)
 		}
 		data, err := os.ReadFile(*verifyPlan)
@@ -226,7 +232,7 @@ func main() {
 			err = openwrt.VerifyDHCPRestored(plan, before, current)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: DHCP restoration not confirmed:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: DHCP restoration not confirmed:", err)
 			os.Exit(1)
 		}
 		fmt.Println("Touched DHCP options match the saved snapshot.")
@@ -234,7 +240,7 @@ func main() {
 	}
 	if *uciPlan != "" || *uciSection != "" || *uciSession != "" {
 		if *uciPlan == "" || *uciSection == "" || *uciSession == "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: UCI plan, section and session are required")
+			fmt.Fprintln(os.Stderr, "routecraft: UCI plan, section and session are required")
 			os.Exit(1)
 		}
 		data, err := os.ReadFile(*uciPlan)
@@ -254,7 +260,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare UCI request:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: cannot prepare UCI request:", err)
 			os.Exit(1)
 		}
 		return
@@ -303,7 +309,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot prepare DHCP plan:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: cannot prepare DHCP plan:", err)
 			os.Exit(1)
 		}
 		return
@@ -312,12 +318,12 @@ func main() {
 		prefix, prefixErr := netip.ParsePrefix(*poolPrefix)
 		router, routerErr := netip.ParseAddr(*poolRouter)
 		if prefixErr != nil || routerErr != nil || *poolStart > 1<<32-1 || *poolSize > 1<<32-1 {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid DHCP pool input")
+			fmt.Fprintln(os.Stderr, "routecraft: invalid DHCP pool input")
 			os.Exit(1)
 		}
 		pool := openwrt.IPv4Pool{Prefix: prefix, Router: router, Start: uint32(*poolStart), Limit: uint32(*poolSize)}
 		if err := pool.Validate(); err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+			fmt.Fprintln(os.Stderr, "routecraft:", err)
 			os.Exit(1)
 		}
 		fmt.Println("DHCP pool is valid.")
@@ -325,7 +331,7 @@ func main() {
 	}
 	if *dhcpStatus != "" || *logicalInterface != "" {
 		if *dhcpStatus == "" || *logicalInterface == "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: DHCP status and logical interface are required")
+			fmt.Fprintln(os.Stderr, "routecraft: DHCP status and logical interface are required")
 			os.Exit(1)
 		}
 		data, err := os.ReadFile(*dhcpStatus)
@@ -337,14 +343,14 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect DHCP sections")
+			fmt.Fprintln(os.Stderr, "routecraft: cannot inspect DHCP sections")
 			os.Exit(1)
 		}
 		return
 	}
 	if *networkStatus != "" || *interfaceDevice != "" {
 		if *networkStatus == "" || *interfaceDevice == "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: network status and device are required")
+			fmt.Fprintln(os.Stderr, "routecraft: network status and device are required")
 			os.Exit(1)
 		}
 		data, err := os.ReadFile(*networkStatus)
@@ -356,13 +362,13 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect OpenWrt interfaces")
+			fmt.Fprintln(os.Stderr, "routecraft: cannot inspect OpenWrt interfaces")
 			os.Exit(1)
 		}
 		return
 	}
 	if *checkExitNode != "" && *exitNodes == "" {
-		fmt.Fprintln(os.Stderr, "routecraft-poc: Tailscale status file is required")
+		fmt.Fprintln(os.Stderr, "routecraft: Tailscale status file is required")
 		os.Exit(1)
 	}
 	if *exitNodes != "" {
@@ -383,7 +389,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: cannot inspect Tailscale status")
+			fmt.Fprintln(os.Stderr, "routecraft: cannot inspect Tailscale status")
 			os.Exit(1)
 		}
 		return
@@ -391,7 +397,7 @@ func main() {
 	if *listInterfaces || *checkInterface != "" {
 		devices, err := netdevices.ListWithVLAN("/sys/class/net", "/proc/net/vlan")
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+			fmt.Fprintln(os.Stderr, "routecraft:", err)
 			os.Exit(1)
 		}
 		for _, device := range devices {
@@ -403,7 +409,7 @@ func main() {
 			}
 		}
 		if *checkInterface != "" {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: interface is not selectable")
+			fmt.Fprintln(os.Stderr, "routecraft: interface is not selectable")
 			os.Exit(1)
 		}
 		return
@@ -414,14 +420,14 @@ func main() {
 			_, _, err = parseSubscription(data)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft-poc: invalid VLESS subscription")
+			fmt.Fprintln(os.Stderr, "routecraft: invalid VLESS subscription")
 			os.Exit(1)
 		}
 		fmt.Println("VLESS subscription contains supported nodes.")
 		return
 	}
 	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial); err != nil {
-		fmt.Fprintln(os.Stderr, "routecraft-poc:", err)
+		fmt.Fprintln(os.Stderr, "routecraft:", err)
 		os.Exit(1)
 	}
 }
@@ -477,6 +483,12 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	if err := omitUnavailable(&p, len(nodes) > 0, len(key) > 0, omitInitial); err != nil {
 		return err
 	}
+	if _, ok := p.DNS["vpn-sub"]; ok && len(nodes) == 0 {
+		return fmt.Errorf("DNS profile requires unavailable outbound vpn-sub")
+	}
+	if _, ok := p.DNS["tailscale-exit"]; ok && len(key) == 0 {
+		return fmt.Errorf("DNS profile requires unavailable outbound tailscale-exit")
+	}
 	categories := policy.Categories{Version: 1, Categories: map[string]string{}}
 	for _, rule := range p.Rules {
 		for _, raw := range rule.Filter {
@@ -524,12 +536,28 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		rules = append(rules, map[string]any{"inbound": []string{"test-exit"}, "action": "route", "outbound": "tailscale-exit"})
 		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": "test-exit", "listen": "127.0.0.1", "listen_port": 1082})
 	}
-	// Sniff first so the test-only domain can be matched for transparent traffic.
-	rules = append(rules, compiled.Route.Rules[0])
-	rules = append(rules, compiled.Route.Rules[1:]...)
+	// Bootstrap resolves transport endpoints independently from client DNS rules.
+	bootstrap := map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}
+	var dns any = map[string]any{"servers": []any{bootstrap}, "final": "local-dns", "reverse_mapping": true}
+	if compiled.DNS != nil {
+		addr, err := netip.ParseAddr(dnsUpstream)
+		if err != nil || addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast() || addr.Zone() != "" {
+			return fmt.Errorf("Split DNS bootstrap requires a separate unicast DNS server IP")
+		}
+		compiled.DNS.Servers = append(compiled.DNS.Servers, bootstrap)
+		const healthName = "routecraft-health.example.com"
+		compiled.DNS.Rules = append([]map[string]any{
+			{"domain": []string{healthName}, "query_type": []string{"A"}, "action": "predefined", "answer": []string{healthName + ". 0 IN A 192.0.2.1"}},
+			{"domain": []string{healthName}, "query_type": []string{"TXT"}, "action": "predefined", "answer": []string{healthName + `. 0 IN TXT "routecraft-dns-ready"`}},
+		}, compiled.DNS.Rules...)
+		dns = compiled.DNS
+		inbounds = append(inbounds, map[string]any{"type": "direct", "tag": "routecraft-dns", "listen": "127.0.0.1", "listen_port": 10553})
+		rules = append(rules, map[string]any{"inbound": []string{"routecraft-dns"}, "action": "hijack-dns"})
+	}
+	rules = append(rules, compiled.Route.Rules...)
 	config := map[string]any{
 		"log":       map[string]any{"level": "debug"},
-		"dns":       map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}}, "final": "local-dns", "reverse_mapping": true},
+		"dns":       dns,
 		"inbounds":  inbounds,
 		"outbounds": compiled.Outbounds,
 		"route":     map[string]any{"rules": rules, "rule_set": compiled.Route.RuleSet, "final": compiled.Route.Final, "default_domain_resolver": "local-dns"},
@@ -541,7 +569,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		}
 		config["endpoints"] = []any{map[string]any{
 			"type": "tailscale", "tag": "tailscale-exit", "state_directory": stateDir,
-			"hostname": "routecraft-poc", "control_url": control, "auth_key": strings.TrimSpace(string(key)),
+			"hostname": "routecraft", "control_url": control, "auth_key": strings.TrimSpace(string(key)),
 			"exit_node": exitNode, "accept_routes": false, "exit_node_allow_lan_access": true, "system_interface": false,
 		}}
 	}

@@ -5,9 +5,9 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/bin" "$tmp/site"
-cat >"$tmp/site/routecraft-poc-build" <<'EOF'
+cat >"$tmp/site/routecraft-build" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$@" >"$ROUTECRAFT_POC_DIR/args"
+printf '%s\n' "$@" >"$ROUTECRAFT_DIR/args"
 EOF
 cat >"$tmp/bin/sing-box" <<'EOF'
 #!/bin/sh
@@ -17,10 +17,10 @@ cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
-chmod +x "$tmp/site/routecraft-poc-build" "$tmp/bin/"*
+chmod +x "$tmp/site/routecraft-build" "$tmp/bin/"*
 PATH="$tmp/bin:$PATH"; export PATH
-ROUTECRAFT_POC_DIR="$tmp/site" ROUTECRAFT_INITIAL_OPTIONAL_VPN=1 ROUTECRAFT_CONFIG_ONLY=1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53
-export ROUTECRAFT_POC_DIR ROUTECRAFT_INITIAL_OPTIONAL_VPN ROUTECRAFT_CONFIG_ONLY ROUTECRAFT_DNS_UPSTREAM
+ROUTECRAFT_DIR="$tmp/site" ROUTECRAFT_INITIAL_OPTIONAL_VPN=1 ROUTECRAFT_CONFIG_ONLY=1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53
+export ROUTECRAFT_DIR ROUTECRAFT_INITIAL_OPTIONAL_VPN ROUTECRAFT_CONFIG_ONLY ROUTECRAFT_DNS_UPSTREAM
 printf 'old secret data\n' >"$tmp/site/subscription.raw"
 sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"
 grep -q -- '-omit-unavailable-initial-vpn' "$tmp/site/args"

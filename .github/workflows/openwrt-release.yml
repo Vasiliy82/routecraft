@@ -1,4 +1,4 @@
-name: Build OpenWrt PoC release
+name: Build RouteCraft OpenWrt release
 
 on:
   push:
@@ -20,7 +20,12 @@ jobs:
       - name: Build architecture bundles and checksums
         shell: pwsh
         run: ./scripts/package-openwrt.ps1
+      - name: Verify OpenWrt bundles
+        run: |
+          for bundle in poc/bundles/routecraft-openwrt-*.tar.gz; do
+            sh tests/integration/bundle-shell.sh "$bundle" || exit 1
+          done
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" poc/bundles/*.tar.gz poc/bundles/*.sha256 poc/install-openwrt.sh --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" poc/bundles/routecraft-openwrt-*.tar.gz poc/bundles/routecraft-openwrt-*.tar.gz.sha256 poc/install-openwrt.sh --title "$GITHUB_REF_NAME" --generate-notes

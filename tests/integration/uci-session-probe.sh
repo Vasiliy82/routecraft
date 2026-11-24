@@ -19,8 +19,8 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 mkdir -p "$tmp/bin" "$tmp/site/.update.lock"
 printf '%s\n' "$$" >"$tmp/site/.update.lock/owner"
-cp "$2" "$tmp/site/routecraft-poc-build"
-chmod 700 "$tmp/site/routecraft-poc-build"
+cp "$2" "$tmp/site/routecraft-build"
+chmod 700 "$tmp/site/routecraft-build"
 cat >"$tmp/bin/ubus" <<'EOF'
 #!/bin/sh
 if [ "$#" = 4 ] && [ "$1" = call ]; then
@@ -30,8 +30,8 @@ fi
 exec "$REAL_UBUS" "$@"
 EOF
 chmod 700 "$tmp/bin/ubus"
-REAL_UBUS=$real_ubus PATH="$tmp/bin:$PATH" ROUTECRAFT_POC_DIR="$tmp/site"
-export REAL_UBUS PATH ROUTECRAFT_POC_DIR
+REAL_UBUS=$real_ubus PATH="$tmp/bin:$PATH" ROUTECRAFT_DIR="$tmp/site"
+export REAL_UBUS PATH ROUTECRAFT_DIR
 before=$(sha256sum /etc/config/dhcp /etc/config/network)
 printf "config dhcp 'lan'\n\toption ignore '0'\n\toption dhcpv4 'server'\n\toption dhcpv6 'server'\nconfig dnsmasq 'dns_main'\n\tlist interface 'guest'\n" >"$config"
 printf '%s\n' '{"options":{"ignore":"1","dhcpv4":"disabled","dhcpv6":"disabled"}}' >"$tmp/dhcp-plan"

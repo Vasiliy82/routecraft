@@ -4,7 +4,7 @@ START=99
 STOP=10
 USE_PROCD=1
 
-dir=/etc/routecraft-poc
+dir=/etc/routecraft
 
 start_service() {
 	echo 'RouteCraft service: preparing to start network rules and sing-box.'

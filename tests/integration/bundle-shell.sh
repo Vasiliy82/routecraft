@@ -2,20 +2,38 @@
 # Check extracted release scripts on a POSIX host without changing networking.
 set -eu
 bundle=${1:?Pass the bundle archive path}
+bundle_dir=$(CDPATH= cd -- "$(dirname -- "$bundle")" && pwd)
+archive=$(basename "$bundle")
+case "$archive" in
+    routecraft-openwrt-amd64.tar.gz|routecraft-openwrt-arm64.tar.gz|routecraft-openwrt-armv7.tar.gz) ;;
+    *) echo "Unexpected bundle name: $archive" >&2; exit 1 ;;
+esac
+arch=${archive#routecraft-openwrt-}
+arch=${arch%.tar.gz}
+(cd "$bundle_dir" && sha256sum -c "$archive.sha256")
 work=$(mktemp -d /tmp/routecraft-bundle-test.XXXXXX)
 case "$work" in /tmp/routecraft-bundle-test.*) ;; *) echo 'Unexpected temporary path' >&2; exit 1;; esac
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 tar -xzf "$bundle" -C "$work"
+[ "$(cat "$work/TARGET_ARCH")" = "$arch" ]
+[ -s "$work/bin/routecraft-build" ]
+[ -f "$work/routecraft.init" ]
+if find "$work" \( -name 'routecraft-poc*' -o -name 'routecraft-lab*' \) | grep -q .; then
+    echo 'Bundle contains obsolete RouteCraft file names' >&2
+    exit 1
+fi
 cr=$(printf '\r')
-for name in configure.sh install.sh start.sh direct-gateway.sh tproxy-gateway.sh routecraft-poc.init; do
+for name in configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init; do
     if grep -q "$cr" "$work/$name"; then echo "CRLF in $name" >&2; exit 1; fi
     sh -n "$work/$name"
 done
-if env -i PATH="$PATH" ROUTECRAFT_POC_DIR="$work/empty" sh "$work/start.sh" >"$work/out" 2>&1; then
+grep -q '^dir=/etc/routecraft$' "$work/routecraft.init"
+grep -q '^sh /etc/routecraft/configure.sh$' "$(dirname -- "$0")/../../poc/install-openwrt.sh"
+if env -i PATH="$PATH" ROUTECRAFT_DIR="$work/empty" sh "$work/start.sh" >"$work/out" 2>&1; then
     echo 'start.sh unexpectedly succeeded without DNS' >&2; exit 1
 fi
 grep -q 'ERROR: set ROUTECRAFT_DNS_UPSTREAM' "$work/out"
-if env -i PATH="$PATH" ROUTECRAFT_POC_DIR="$work/empty" ROUTECRAFT_DNS_UPSTREAM=192.0.2.53 sh "$work/start.sh" >"$work/out" 2>&1; then
+if env -i PATH="$PATH" ROUTECRAFT_DIR="$work/empty" ROUTECRAFT_DNS_UPSTREAM=192.0.2.53 sh "$work/start.sh" >"$work/out" 2>&1; then
     echo 'start.sh unexpectedly succeeded without an exit node' >&2; exit 1
 fi
 grep -q 'ERROR: set ROUTECRAFT_EXIT_NODE' "$work/out"

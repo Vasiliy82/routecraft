@@ -17,11 +17,12 @@ type Input struct {
 	Categories policy.Categories
 }
 
-// Artifacts is a fragment, not a complete sing-box configuration. The runtime
-// provider must supply inbounds, DNS and any referenced external outbound tags.
+// Artifacts is a sing-box fragment. The runtime supplies inbounds, bootstrap
+// DNS and any referenced external outbound tags.
 type Artifacts struct {
 	Route     Route            `json:"route"`
 	Outbounds []map[string]any `json:"outbounds"`
+	DNS       *DNS             `json:"dns,omitempty"`
 }
 
 type Route struct {
@@ -47,6 +48,12 @@ func Compile(in Input) (Artifacts, error) {
 		if outbound.Type == "direct" {
 			result.Outbounds = append(result.Outbounds, map[string]any{"type": "direct", "tag": name})
 		}
+		if profile, ok := in.Policy.DNS[name]; ok {
+			if result.DNS == nil {
+				result.DNS = &DNS{DisableCache: true}
+			}
+			result.DNS.Servers = append(result.DNS.Servers, dnsServer(name, outbound, profile))
+		}
 	}
 	usedSets := make(map[string]string)
 	for _, rule := range in.Policy.Rules {
@@ -67,9 +74,13 @@ func Compile(in Input) (Artifacts, error) {
 			} else {
 				result.Route.Final = tag
 			}
+			if result.DNS != nil {
+				result.DNS.setDefault(rule.Outbound, outbound)
+			}
 			continue
 		}
 		alternatives := make([]map[string]any, 0, len(rule.Filter))
+		var dnsAlternatives []map[string]any
 		for _, filter := range rule.Filter {
 			kind, value, _ := policy.SplitFilter(filter)
 			condition := make(map[string]any)
@@ -96,6 +107,9 @@ func Compile(in Input) (Artifacts, error) {
 				condition["network"] = value
 			}
 			alternatives = append(alternatives, condition)
+			if result.DNS != nil && policy.IsDomainFilter(kind) {
+				dnsAlternatives = append(dnsAlternatives, condition)
+			}
 		}
 		compiled := map[string]any{"type": "logical", "mode": "or", "rules": alternatives}
 		if outbound.Type == "reject" {
@@ -105,6 +119,9 @@ func Compile(in Input) (Artifacts, error) {
 			compiled["outbound"] = tag
 		}
 		result.Route.Rules = append(result.Route.Rules, compiled)
+		if len(dnsAlternatives) > 0 {
+			result.DNS.Rules = append(result.DNS.Rules, dnsRule(rule.Outbound, outbound, dnsAlternatives))
+		}
 	}
 	setNames := make([]string, 0, len(usedSets))
 	for name := range usedSets {

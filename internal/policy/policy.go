@@ -14,8 +14,9 @@ import (
 )
 
 type Policy struct {
-	Version int    `yaml:"version"`
-	Rules   []Rule `yaml:"rules"`
+	Version int                   `yaml:"version"`
+	Rules   []Rule                `yaml:"rules"`
+	DNS     map[string]DNSProfile `yaml:"dns,omitempty"`
 }
 
 type Rule struct {
@@ -34,6 +35,13 @@ type Outbound struct {
 	Tag       string `yaml:"tag,omitempty"`
 	Via       string `yaml:"via,omitempty"`
 	Interface string `yaml:"interface,omitempty"`
+}
+
+type DNSProfile struct {
+	Type       string `yaml:"type"`
+	Server     string `yaml:"server"`
+	Port       uint16 `yaml:"port,omitempty"`
+	ServerName string `yaml:"server-name,omitempty"`
 }
 
 // Categories are locally available rule sets, indexed by e.g. geosite:openai.
@@ -164,13 +172,23 @@ func Validate(p Policy, o Outbounds, c Categories) error {
 			return fmt.Errorf("outbound %q: unsupported type %q", name, outbound.Type)
 		}
 	}
+	for name, profile := range p.DNS {
+		outbound, ok := o.Outbounds[name]
+		if !ok {
+			return fmt.Errorf("DNS profile references unknown outbound %q", name)
+		}
+		if err := validateDNS(outbound, profile); err != nil {
+			return fmt.Errorf("outbound %q: %w", name, err)
+		}
+	}
 	seen := make(map[string]bool)
 	for i, rule := range p.Rules {
 		if !namePattern.MatchString(rule.Name) || seen[rule.Name] {
 			return fmt.Errorf("rule %d: invalid or duplicate name %q", i+1, rule.Name)
 		}
 		seen[rule.Name] = true
-		if _, ok := o.Outbounds[rule.Outbound]; !ok {
+		outbound, ok := o.Outbounds[rule.Outbound]
+		if !ok {
 			return fmt.Errorf("rule %q: unknown outbound %q", rule.Name, rule.Outbound)
 		}
 		if rule.Filter == nil && i != len(p.Rules)-1 {
@@ -182,17 +200,54 @@ func Validate(p Policy, o Outbounds, c Categories) error {
 		if i == len(p.Rules)-1 && rule.Filter != nil {
 			return fmt.Errorf("rule %q: final default rule is required", rule.Name)
 		}
+		matchesDNS := rule.Filter == nil
 		for _, f := range rule.Filter {
 			kind, value, err := SplitFilter(f)
 			if err != nil {
 				return fmt.Errorf("rule %q: %w", rule.Name, err)
 			}
+			matchesDNS = matchesDNS || IsDomainFilter(kind)
 			if kind == "geosite" || kind == "geoip" {
 				if path, ok := c.Categories[kind+":"+value]; !ok || strings.TrimSpace(path) == "" {
 					return fmt.Errorf("rule %q: category %s:%s not found in local index or overlays", rule.Name, kind, value)
 				}
 			}
 		}
+		if _, hasProfile := p.DNS[rule.Outbound]; len(p.DNS) > 0 && matchesDNS && outbound.Type != "reject" && !hasProfile {
+			return fmt.Errorf("rule %q: outbound %q requires a DNS profile", rule.Name, rule.Outbound)
+		}
+	}
+	return nil
+}
+
+func IsDomainFilter(kind string) bool {
+	switch kind {
+	case "domain", "domainsuffix", "domainkeyword", "geosite":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateDNS(outbound Outbound, profile DNSProfile) error {
+	if outbound.Type != "direct" && outbound.Type != "sing-box-tag" {
+		return fmt.Errorf("DNS profile requires a direct or sing-box-tag outbound")
+	}
+	addr, err := netip.ParseAddr(profile.Server)
+	if err != nil || addr.Zone() != "" || addr.IsUnspecified() || addr.IsMulticast() {
+		return fmt.Errorf("DNS server must be an explicit unicast IP address")
+	}
+	switch profile.Type {
+	case "udp", "tcp":
+		if profile.ServerName != "" {
+			return fmt.Errorf("DNS server-name is only supported for HTTPS")
+		}
+	case "https":
+		if _, _, err := SplitFilter("domain:" + profile.ServerName); err != nil {
+			return fmt.Errorf("HTTPS DNS requires a valid TLS server-name")
+		}
+	default:
+		return fmt.Errorf("unsupported DNS type %q", profile.Type)
 	}
 	return nil
 }

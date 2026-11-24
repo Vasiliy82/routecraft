@@ -2,12 +2,16 @@
 # Collect site-specific settings and build a candidate without applying routes.
 set -eu
 
-dir=${ROUTECRAFT_POC_DIR:-/etc/routecraft-poc}
+dir=${ROUTECRAFT_DIR:-/etc/routecraft}
+secret_dir=${ROUTECRAFT_SECRET_DIR:-/root/routecraft-config}
 [ "$(id -u)" = 0 ] || { echo 'Run configure.sh as root.' >&2; exit 1; }
-[ -x "$dir/routecraft-poc-build" ] || { echo 'Install the bundle first with install.sh --install.' >&2; exit 1; }
+[ -x "$dir/routecraft-build" ] || { echo 'Install the bundle first with install.sh --install.' >&2; exit 1; }
 
 lan_if=$(uci -q get network.lan.device 2>/dev/null || uci -q get network.lan.ifname 2>/dev/null || true)
 lan_if=${lan_if%% *}
+wan_if=$(uci -q get network.wan.device 2>/dev/null || uci -q get network.wan.ifname 2>/dev/null || true)
+wan_if=${wan_if%% *}
+wan_if=${wan_if:-$(ip -4 route show default 2>/dev/null | awk 'NR==1 {for (i=1;i<NF;i++) if ($i == "dev") print $(i+1)}')}
 dns_default=$(uci -q get network.lan.dns 2>/dev/null | awk '{print $1}')
 dns_default=${dns_default:-$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print $3}')}
 
@@ -87,6 +91,46 @@ ask_secret() {
     printf '%s' "$answer"
 }
 
+read_secret() {
+    secret_file="$secret_dir/$2"
+    if [ ! -e "$secret_file" ] && [ ! -L "$secret_file" ]; then
+        ask_secret "$1"
+        return
+    fi
+    [ -f "$secret_file" ] && [ -r "$secret_file" ] && [ ! -L "$secret_file" ] || {
+        echo "ERROR: expected a readable regular file at $secret_file." >&2
+        return 1
+    }
+    secret_value=$(cat "$secret_file") || return 1
+    carriage_return=$(printf '\r')
+    secret_value=${secret_value%"$carriage_return"}
+    case "$secret_value" in
+        ''|*[[:space:]]*) echo "ERROR: expected one nonempty value in $secret_file." >&2; return 1 ;;
+    esac
+    printf '%s' "$secret_value"
+}
+
+ask_interface() {
+    interface_label=$1
+    interface_default=$2
+    if ! printf '%s\n' "$available_interfaces" | grep -Fx -- "$interface_default" >/dev/null; then
+        interface_default=
+    fi
+    while :; do
+        interface_choice=$(ask "$interface_label" "$interface_default") || return 1
+        case "$interface_choice" in
+            *[!a-zA-Z0-9_.-]*|'') ;;
+            *) if printf '%s\n' "$available_interfaces" | grep -Fx -- "$interface_choice" >/dev/null &&
+                  "$dir/routecraft-build" -check-interface "$interface_choice" >/dev/null 2>&1; then
+                   printf '%s' "$interface_choice"
+                   return
+               fi ;;
+        esac
+        echo 'That device is unavailable or cannot be selected; choose one from the list.' >&2
+        interface_default=
+    done
+}
+
 # Only called after a newly installed client is explicitly selected for
 # registration. The system and embedded identities need separate keys if
 # those keys are single-use. Avoid putting the system key in process arguments.
@@ -109,17 +153,11 @@ case "$rebind_answer" in ''|y|Y|yes|YES) disable_rebind=1;; *) disable_rebind=0;
 echo 'The current dnsmasq setting remains unchanged while the candidate is prepared.' >&2
 
 echo 'Selectable devices (bridge ports and unsupported virtual devices are omitted):' >&2
-available_interfaces=$("$dir/routecraft-poc-build" -list-interfaces) || { echo 'ERROR: cannot list network devices.' >&2; exit 1; }
+available_interfaces=$("$dir/routecraft-build" -list-interfaces) || { echo 'ERROR: cannot list network devices.' >&2; exit 1; }
 [ -n "$available_interfaces" ] || { echo 'ERROR: no selectable network devices found.' >&2; exit 1; }
 printf '%s\n' "$available_interfaces" >&2
-if ! printf '%s\n' "$available_interfaces" | grep -Fx -- "$lan_if" >/dev/null; then lan_if=; fi
-while :; do
-    lan_if=$(ask 'LAN interface' "$lan_if") || { echo 'ERROR: interface input ended.' >&2; exit 1; }
-    case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') valid_interface=0;; *) valid_interface=1;; esac
-    if [ "$valid_interface" = 1 ] && "$dir/routecraft-poc-build" -check-interface "$lan_if" >/dev/null 2>&1; then break; fi
-    echo 'That device is unavailable or cannot be selected; choose one from the list.' >&2
-    lan_if=
-done
+wan_if=$(ask_interface 'WAN interface' "$wan_if") || { echo 'ERROR: interface input ended.' >&2; exit 1; }
+lan_if=$(ask_interface 'LAN interface' "$lan_if") || { echo 'ERROR: interface input ended.' >&2; exit 1; }
 lan_subnet=$(ip -4 route show dev "$lan_if" scope link 2>/dev/null | awk 'NR==1 {print $1}')
 lan_subnet=$(ask 'LAN IPv4 subnet in CIDR form' "$lan_subnet")
 dns_upstream=$(ask 'DNS upstream IPv4' "$dns_default")
@@ -170,7 +208,7 @@ if [ "$first_install" = 1 ]; then
     if command -v tailscale >/dev/null 2>&1; then
         ts_status=$(tailscale status --json 2>/dev/null || true)
     fi
-    candidates=$(printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin 2>/dev/null || true)
+    candidates=$(printf '%s' "$ts_status" | "$dir/routecraft-build" -list-exit-nodes /dev/stdin 2>/dev/null || true)
     if [ -n "$candidates" ] && [ "$candidates" != '[]' ] && [ "$candidates" != null ]; then
         echo 'Online approved Tailscale Exit Nodes (address and name):' >&2
         printf '%s\n' "$candidates" >&2
@@ -178,16 +216,16 @@ if [ "$first_install" = 1 ]; then
         IFS= read -r use_ts
         case "$use_ts" in
             ''|y|Y|yes|YES)
-                if ! printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_default" >/dev/null 2>&1; then exit_default=; fi
+                if ! printf '%s' "$ts_status" | "$dir/routecraft-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_default" >/dev/null 2>&1; then exit_default=; fi
                 while :; do
                     exit_node=$(ask 'Exit Node address from the list' "$exit_default") || exit 1
                     ts_status=$(tailscale status --json 2>/dev/null || true)
-                    if [ -n "$exit_node" ] && printf '%s' "$ts_status" | "$dir/routecraft-poc-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_node" >/dev/null 2>&1; then break; fi
+                    if [ -n "$exit_node" ] && printf '%s' "$ts_status" | "$dir/routecraft-build" -list-exit-nodes /dev/stdin -check-exit-node "$exit_node" >/dev/null 2>&1; then break; fi
                     echo 'Exit Node is unavailable or not approved; choose an address from the list.' >&2
                     exit_default=
                 done
                 headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
-                auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key')
+                auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key)
                 ;;
         esac
     else
@@ -198,8 +236,8 @@ else
     headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
     exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
 fi
-subscription=$(ask_secret 'VLESS subscription URL (optional on first install)')
-if [ "$first_install" != 1 ]; then auth_key=$(ask_secret 'Tailscale or Headscale pre-auth key'); fi
+subscription=$(read_secret 'VLESS subscription URL (optional on first install)' vless-subscription-url)
+if [ "$first_install" != 1 ]; then auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key); fi
 
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
 case "$lan_subnet" in *[!0-9./]*|*/*/*|'') echo 'Invalid LAN subnet.' >&2; exit 1;; esac
@@ -233,13 +271,13 @@ fi
 if [ "$first_install" = 1 ] && [ "$initial_optional" != 1 ]; then
     echo 'ERROR: an active installation appeared; rerun the wizard.' >&2; exit 1
 fi
-printf 'ROUTECRAFT_LAN_INTERFACE=%s\nROUTECRAFT_LAN_SUBNET=%s\nROUTECRAFT_DNS_UPSTREAM=%s\nROUTECRAFT_HEADSCALE_URL=%s\nROUTECRAFT_EXIT_NODE=%s\nROUTECRAFT_DISABLE_REBIND=%s\n' \
-    "$lan_if" "$lan_subnet" "$dns_upstream" "$headscale" "$exit_node" "$disable_rebind" >"$dir/site.candidate.env"
+printf 'ROUTECRAFT_LAN_INTERFACE=%s\nROUTECRAFT_WAN_INTERFACE=%s\nROUTECRAFT_LAN_SUBNET=%s\nROUTECRAFT_DNS_UPSTREAM=%s\nROUTECRAFT_HEADSCALE_URL=%s\nROUTECRAFT_EXIT_NODE=%s\nROUTECRAFT_DISABLE_REBIND=%s\n' \
+    "$lan_if" "$wan_if" "$lan_subnet" "$dns_upstream" "$headscale" "$exit_node" "$disable_rebind" >"$dir/site.candidate.env"
 printf '%s\n' "$subscription" >"$dir/subscription.candidate.url"
 printf '%s\n' "$auth_key" >"$dir/headscale.candidate.key"
 chmod 600 "$dir/site.candidate.env" "$dir/subscription.candidate.url" "$dir/headscale.candidate.key"
 
-ROUTECRAFT_POC_DIR="$dir" ROUTECRAFT_SITE_ENV="$dir/site.candidate.env" \
+ROUTECRAFT_DIR="$dir" ROUTECRAFT_SITE_ENV="$dir/site.candidate.env" \
     ROUTECRAFT_SUBSCRIPTION_FILE="$dir/subscription.candidate.url" ROUTECRAFT_HEADSCALE_KEY_FILE="$dir/headscale.candidate.key" \
     ROUTECRAFT_CONFIG_ONLY=1 ROUTECRAFT_INITIAL_OPTIONAL_VPN="$initial_optional" ROUTECRAFT_LOCK_OWNER="$$" sh "$dir/start.sh"
 sha256sum "$dir/sing-box.candidate.json" "$dir/site.candidate.env" "$dir/subscription.candidate.url" "$dir/headscale.candidate.key" >"$dir/candidate.sha256.tmp"

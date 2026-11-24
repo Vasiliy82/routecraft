@@ -11,7 +11,11 @@ printf '%s\n' 'https://example.invalid/private-token' >"$tmp/site/subscription.u
 printf '%s\n' 'previous-good' >"$tmp/site/subscription.raw"
 cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
-case "$*" in *example.invalid*) ;; *) [ "$MODE" = valid_all ] || exit 1;; esac
+case "$*" in
+    *private-token*) exit 1 ;;
+    *'--config -'*) IFS= read -r config; [ "$config" = 'url = "https://example.invalid/private-token"' ] || exit 1 ;;
+    *) [ "$MODE" = valid_all ] || exit 1 ;;
+esac
 [ "$MODE" != download_error ] || exit 22
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then shift; printf '%s\n' "$MODE" >"$1"; exit 0; fi
@@ -19,7 +23,7 @@ while [ "$#" -gt 0 ]; do
 done
 exit 1
 EOF
-cat >"$tmp/site/routecraft-poc-build" <<'EOF'
+cat >"$tmp/site/routecraft-build" <<'EOF'
 #!/bin/sh
 case "$1" in
   -check-subscription) case "$(cat "$3")" in valid|valid_all) exit 0;; *) exit 1;; esac;;
@@ -30,11 +34,11 @@ cat >"$tmp/bin/sing-box" <<'EOF'
 #!/bin/sh
 [ "${FAIL_CHECK:-0}" != 1 ]
 EOF
-chmod +x "$tmp/bin/curl" "$tmp/site/routecraft-poc-build"
+chmod +x "$tmp/bin/curl" "$tmp/site/routecraft-build"
 chmod +x "$tmp/bin/sing-box"
 PATH="$tmp/bin:$PATH"; export PATH
-ROUTECRAFT_POC_DIR="$tmp/site" ROUTECRAFT_EXIT_NODE=100.64.0.1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53
-export ROUTECRAFT_POC_DIR ROUTECRAFT_EXIT_NODE ROUTECRAFT_DNS_UPSTREAM
+ROUTECRAFT_DIR="$tmp/site" ROUTECRAFT_EXIT_NODE=100.64.0.1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53
+export ROUTECRAFT_DIR ROUTECRAFT_EXIT_NODE ROUTECRAFT_DNS_UPSTREAM
 mkdir "$tmp/site/.update.lock"
 printf '%s\n' "$$" >"$tmp/site/.update.lock/owner"
 MODE=download_error ROUTECRAFT_LOCK_OWNER=$$; export MODE ROUTECRAFT_LOCK_OWNER
@@ -69,6 +73,6 @@ FAIL_CHECK=0; export FAIL_CHECK
 sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"
 [ "$(cat "$tmp/site/subscription.raw")" = valid_all ]
 [ "$(cat "$tmp/site/geosite/openai.srs")" = old-geodata ]
-[ -n "$(find "$tmp/site/generations" -mindepth 1 -print -quit)" ]
+[ -n "$(find "$tmp/site/generations" -mindepth 1 -print)" ]
 [ -z "$(find "$tmp/site" -name '.subscription.*' -print)" ]
 echo 'subscription-staging: passed'

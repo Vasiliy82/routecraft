@@ -42,7 +42,7 @@ download() {
 
 temporary=$(mktemp -d /tmp/routecraft-install.XXXXXX)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-archive="routecraft-poc-openwrt-$bundle_arch.tar.gz"
+archive="routecraft-openwrt-$bundle_arch.tar.gz"
 bundle_base="https://raw.githubusercontent.com/$repository/$ref/poc/bundles"
 download "$bundle_base/$archive" "$temporary/$archive"
 download "$bundle_base/$archive.sha256" "$temporary/$archive.sha256"
@@ -51,4 +51,4 @@ tar -xzf "$temporary/$archive" -C "$temporary"
 
 echo "Installing RouteCraft PoC for $system_arch. The helper will install missing OpenWrt packages."
 sh "$temporary/install.sh" --install
-sh /etc/routecraft-poc/configure.sh
+sh /etc/routecraft/configure.sh

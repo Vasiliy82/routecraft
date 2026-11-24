@@ -17,15 +17,15 @@ cat >"$tmp/bin/jsonfilter" <<'EOF'
 #!/bin/sh
 case "$*" in *'@.section'*) printf 'dns_main\n';; *) cat >/dev/null; printf '0123456789abcdef0123456789abcdef\n';; esac
 EOF
-cat >"$tmp/site/routecraft-poc-build" <<'EOF'
+cat >"$tmp/site/routecraft-build" <<'EOF'
 #!/bin/sh
 if [ "$1" = -verify-dhcp-plan ]; then [ "${MOCK_VERIFY_FAIL:-0}" != 1 ]; exit $?; fi
 if [ "$1" = -verify-dns-plan ]; then [ "${MOCK_DNS_VERIFY_FAIL:-0}" != 1 ]; exit $?; fi
 printf '{"config":"dhcp","section":"lan","values":{"ignore":"1"}}\n'
 EOF
-chmod +x "$tmp/bin/"* "$tmp/site/routecraft-poc-build"
-PATH="$tmp/bin:$PATH" ROUTECRAFT_POC_DIR="$tmp/site" MOCK_CALLS="$tmp/calls"
-export PATH ROUTECRAFT_POC_DIR MOCK_CALLS
+chmod +x "$tmp/bin/"* "$tmp/site/routecraft-build"
+PATH="$tmp/bin:$PATH" ROUTECRAFT_DIR="$tmp/site" MOCK_CALLS="$tmp/calls"
+export PATH ROUTECRAFT_DIR MOCK_CALLS
 printf '{}\n' >"$tmp/plan"
 sh "$repo/poc/uci-dhcp-session.sh" prepare "$tmp/plan" lan >"$tmp/out"
 [ -s "$tmp/site/.uci-dhcp-session/session" ]

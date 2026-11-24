@@ -8,9 +8,10 @@ $required = @(
     (Join-Path $pocDir 'install.sh'),
     (Join-Path $pocDir 'configure.sh'),
     (Join-Path $pocDir 'start.sh'),
+    (Join-Path $pocDir 'dnsmasq-split.sh'),
     (Join-Path $pocDir 'direct-gateway.sh'),
     (Join-Path $pocDir 'tproxy-gateway.sh'),
-    (Join-Path $pocDir 'routecraft-poc.init'),
+    (Join-Path $pocDir 'routecraft.init'),
     (Join-Path $pocDir 'policy.yaml')
 )
 
@@ -60,7 +61,7 @@ try {
             Remove-Item Env:GOARM -ErrorAction SilentlyContinue
         }
 
-        $binary = Join-Path $stage 'bin/routecraft-poc-build'
+        $binary = Join-Path $stage 'bin/routecraft-build'
         & go build -trimpath -ldflags '-s -w' -o $binary ./poc/build
         if ($LASTEXITCODE -ne 0) {
             throw "Go cross-build failed for linux/$($target.Name)."
@@ -88,7 +89,7 @@ try {
         }
         [System.IO.File]::WriteAllText((Join-Path $stage 'TARGET_ARCH'), $target.Name, [System.Text.Encoding]::ASCII)
 
-        $bundle = Join-Path $bundleDir "routecraft-poc-openwrt-$($target.Name).tar.gz"
+        $bundle = Join-Path $bundleDir "routecraft-openwrt-$($target.Name).tar.gz"
         if (Test-Path -LiteralPath $bundle) {
             Remove-Item -LiteralPath $bundle -Force
         }
@@ -99,7 +100,8 @@ try {
 
         # Verify the actual archive, not a text-normalized comparison or only
         # the staging files. CRLF makes OpenWrt ash reject `set -eu`.
-        $rootPath = [System.IO.Path]::GetFullPath($stageRoot).TrimEnd('\') + '\'
+        $separator = [System.IO.Path]::DirectorySeparatorChar
+        $rootPath = [System.IO.Path]::GetFullPath($stageRoot).TrimEnd($separator) + $separator
         $verifyPath = [System.IO.Path]::GetFullPath((Join-Path $stageRoot ('.verify-' + [guid]::NewGuid().ToString('N'))))
         if (-not $verifyPath.StartsWith($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'Bundle verification directory is outside the staging root.'

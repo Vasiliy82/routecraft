@@ -53,3 +53,45 @@ func TestGatewayDoesNotSilentlyBecomeDirect(t *testing.T) {
 		t.Fatal("unimplemented gateway was accepted")
 	}
 }
+
+func TestCompileSplitDNSProjectsDomainAlternatives(t *testing.T) {
+	in := Input{
+		Policy: policy.Policy{Version: 1, Rules: []policy.Rule{
+			{Name: "vpn", Filter: []string{"domainsuffix:example.org", "geosite:media", "geoip:media", "port:443"}, Outbound: "vpn"},
+			{Name: "block", Filter: []string{"domain:bad.example.org"}, Outbound: "reject"},
+			{Name: "ip", Filter: []string{"ip:192.0.2.5"}, Outbound: "ip-only"},
+			{Name: "default", Outbound: "direct"},
+		}, DNS: map[string]policy.DNSProfile{
+			"direct": {Type: "udp", Server: "192.0.2.53"},
+			"vpn":    {Type: "https", Server: "198.51.100.53", ServerName: "dns.example.org"},
+		}},
+		Outbounds: policy.Outbounds{Version: 1, Outbounds: map[string]policy.Outbound{
+			"vpn": {Type: "sing-box-tag", Tag: "tunnel"}, "ip-only": {Type: "sing-box-tag", Tag: "other"},
+			"direct": {Type: "direct"}, "reject": {Type: "reject"},
+		}},
+		Categories: policy.Categories{Version: 1, Categories: map[string]string{
+			"geosite:media": "domains.srs", "geoip:media": "addresses.srs",
+		}},
+	}
+	a, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := a.DNS
+	if dns == nil || dns.Final != "routecraft-dns-direct" || len(dns.Rules) != 2 {
+		t.Fatalf("unexpected DNS policy: %#v", dns)
+	}
+	first := dns.Rules[0]
+	filters := first["rules"].([]map[string]any)
+	if first["server"] != "routecraft-dns-vpn" || first["mode"] != "or" || len(filters) != 2 ||
+		filters[0]["domain_suffix"].([]string)[0] != "example.org" || filters[1]["rule_set"].([]string)[0] != "geosite-media" {
+		t.Fatalf("unexpected first DNS rule: %#v", first)
+	}
+	if dns.Rules[1]["rcode"] != "REFUSED" || dns.Servers[1]["detour"] != "tunnel" || len(a.Route.RuleSet) != 2 {
+		t.Fatalf("unexpected DNS actions or shared rule sets: %#v, %#v", dns, a.Route.RuleSet)
+	}
+	delete(in.Policy.DNS, "vpn")
+	if _, err := Compile(in); err == nil {
+		t.Fatal("missing VPN DNS profile silently accepted")
+	}
+}
