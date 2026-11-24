@@ -22,7 +22,7 @@ func CheckRoutes(data []byte, reservedTable uint32, owned bool) error {
 		}
 		table, err := number(raw)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot read route table ID: %w", err)
 		}
 		if table != uint64(reservedTable) {
 			continue

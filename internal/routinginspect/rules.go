@@ -30,7 +30,7 @@ func Check(data []byte, reservedMark, reservedTable uint32) error {
 		if raw, ok := rule["table"]; ok {
 			table, err := number(raw)
 			if err != nil {
-				return err
+				return fmt.Errorf("cannot read policy rule table ID: %w", err)
 			}
 			if table == uint64(reservedTable) {
 				return fmt.Errorf("reserved routing table is referenced")
@@ -45,20 +45,20 @@ func Check(data []byte, reservedMark, reservedTable uint32) error {
 		}
 		mark, err := number(raw)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot read policy rule fwmark: %w", err)
 		}
 		mask := uint64(0xffffffff)
 		if raw, ok := rule["fwmask"]; ok {
 			mask, err = number(raw)
 			if err != nil {
-				return err
+				return fmt.Errorf("cannot read policy rule fwmask: %w", err)
 			}
 		}
 		if _, inverted := rule["not"]; inverted {
 			return fmt.Errorf("inverted marked rule requires review")
 		}
 		if mark&mask == uint64(reservedMark)&mask {
-			return fmt.Errorf("reserved mark overlaps an existing rule")
+			return fmt.Errorf("reserved mark %#x overlaps an existing rule (fwmark %#x, fwmask %#x)", reservedMark, mark, mask)
 		}
 	}
 	return nil

@@ -87,22 +87,28 @@ if [ "$mode" = --install ] && [ "${ROUTECRAFT_DEPS_ATTEMPTED:-0}" != 1 ] && ! pa
     dependency_missing=1
     echo 'MISSING: ip-full. Policy-routing checks will run after dependency installation.'
 else
-    numeric_rules=$(ip -j -N rule show 2>/dev/null) || { echo 'ERROR: cannot inspect numeric policy-routing rules.'; numeric_rules=; fail=1; }
-    numeric_routes=$(ip -j -N -4 route show table all 2>/dev/null) || { echo 'ERROR: cannot inspect numeric routing tables.'; numeric_routes=; fail=1; }
-    rules_safe=0
-    routes_safe=0
+    owned_lan=
     if [ "$owned" -eq 1 ]; then
         owned_lan=$(sed -n 's/^ROUTECRAFT_LAN_INTERFACE=//p' /etc/routecraft/site.env 2>/dev/null || true)
-        case "$owned_lan" in *[!a-zA-Z0-9_.-]*|'') ;; *)
-            if printf '%s\n' "$numeric_rules" | "$builder" -check-routing-rules /dev/stdin -owned-lan "$owned_lan" >/dev/null 2>&1; then rules_safe=1; fi
-            if printf '%s\n' "$numeric_routes" | "$builder" -check-routing-routes /dev/stdin -owned-lan "$owned_lan" >/dev/null 2>&1; then routes_safe=1; fi;;
+        case "$owned_lan" in *[!a-zA-Z0-9_.-]*|'')
+            echo 'ERROR: cannot validate ownership of routes without a recorded LAN device.' >&2
+            owned_lan=
+            conflict=1
+            ;;
         esac
-    else
-        if printf '%s\n' "$numeric_rules" | "$builder" -check-routing-rules /dev/stdin >/dev/null 2>&1; then rules_safe=1; fi
-        if printf '%s\n' "$numeric_routes" | "$builder" -check-routing-routes /dev/stdin >/dev/null 2>&1; then routes_safe=1; fi
     fi
-    if [ "$rules_safe" -ne 1 ] || [ "$routes_safe" -ne 1 ]; then
-        echo 'CONFLICT: mark 0x81, routing table 100 or a rule pointing to it is already used outside the installed RouteCraft PoC.'
+    if numeric_rules=$(ip -j -N -4 rule show 2>/dev/null); then
+        printf '%s\n' "$numeric_rules" | "$builder" -check-routing-rules /dev/stdin -owned-lan "$owned_lan" || conflict=1
+    else
+        echo 'ERROR: cannot inspect numeric policy-routing rules.' >&2
+        fail=1
+        conflict=1
+    fi
+    if numeric_routes=$(ip -j -N -4 route show table all 2>/dev/null); then
+        printf '%s\n' "$numeric_routes" | "$builder" -check-routing-routes /dev/stdin -owned-lan "$owned_lan" || conflict=1
+    else
+        echo 'ERROR: cannot inspect numeric routing tables.' >&2
+        fail=1
         conflict=1
     fi
 fi
@@ -149,7 +155,7 @@ if [ "$mode" = --install ] && [ "$dependency_missing" -ne 0 ] && [ "${ROUTECRAFT
     [ "$(id -u)" = 0 ] || { echo 'ERROR: install requires root.'; exit 1; }
     [ -r /etc/openwrt_release ] || { echo 'ERROR: dependency installation is supported only on OpenWrt.'; exit 1; }
     [ "$detected_arch" != unsupported ] && [ "$target_arch" = "$detected_arch" ] || { echo 'ERROR: unsupported system or mismatched bundle.'; exit 1; }
-    [ "$conflict" -eq 0 ] || { echo 'ERROR: resolve routing conflicts before installing packages.'; exit 1; }
+    [ "$conflict" -eq 0 ] || { echo 'ERROR: preflight could not confirm that the routing resources are available. See the reason above.'; exit 1; }
     packages=''
     for package in sing-box curl ca-bundle coreutils-stty ip-full nftables-json kmod-nft-tproxy; do
         package_installed "$package" && continue

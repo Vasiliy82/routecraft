@@ -78,7 +78,7 @@ func main() {
 			err = routinginspect.CheckRoutes(data, 100, *ownedLAN != "")
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft: routing table conflict or unreadable routes:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: IPv4 routes:", err)
 			os.Exit(1)
 		}
 		return
@@ -93,7 +93,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "routecraft: routing conflict or unreadable rules:", err)
+			fmt.Fprintln(os.Stderr, "routecraft: IPv4 policy rules:", err)
 			os.Exit(1)
 		}
 		return

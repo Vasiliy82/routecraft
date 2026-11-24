@@ -18,7 +18,7 @@ cat >"$tmp/fake/ip" <<'EOF'
 #!/bin/sh
 case "$*" in
   '-4 route show default') printf 'default via 192.0.2.1 dev %s\n' "$MOCK_LAN";;
-  '-j -N rule show') case "$MOCK_CONFLICT" in rule) echo '[{"table":"100"}]';; mark) echo '[{"fwmark":"0x81","table":"200"}]';; mask) echo '[{"fwmark":"0x80","fwmask":"0xf0","table":"200"}]';; inspect_error) exit 1;; *) echo '[{"fwmark":"0x80000","fwmask":"0xff0000","table":"52"}]';; esac;;
+  '-j -N -4 rule show') case "$MOCK_CONFLICT" in rule) echo '[{"table":"100"}]';; mark) echo '[{"fwmark":"0x81","table":"200"}]';; mask) echo '[{"fwmark":"0x80","fwmask":"0xf0","table":"200"}]';; nonnumeric) echo '[{"table":"custom"}]';; inspect_error) exit 1;; *) echo '[{"fwmark":"0x80000","fwmask":"0xff0000","table":"52"}]';; esac;;
   '-j -N -4 route show table all') case "$MOCK_CONFLICT" in route) echo '[{"type":"2","dst":"default","dev":"lo","table":"100","scope":"254","flags":[]}]';; routes_error) exit 1;; *) echo '[]';; esac;;
   *) exit 1;;
 esac
@@ -34,16 +34,21 @@ EOF
 chmod 700 "$tmp/fake/"*
 PATH="$tmp/fake:$PATH"; export PATH
 before=$(sha256sum /etc/config/dhcp /etc/config/network)
-for MOCK_CONFLICT in rule mark mask route; do
+for MOCK_CONFLICT in rule mark mask route nonnumeric; do
     export MOCK_CONFLICT
     sh "$tmp/install.sh" --check >"$tmp/out" 2>&1
-    grep -q 'CONFLICT: mark 0x81, routing table 100' "$tmp/out"
+    case "$MOCK_CONFLICT" in
+        rule) grep -Fq 'IPv4 policy rules: reserved routing table is referenced' "$tmp/out" ;;
+        mark|mask) grep -Fq 'IPv4 policy rules: reserved mark 0x81 overlaps' "$tmp/out" ;;
+        route) grep -Fq 'IPv4 routes: reserved routing table contains foreign routes' "$tmp/out" ;;
+        nonnumeric) grep -Fq 'IPv4 policy rules: cannot read policy rule table ID' "$tmp/out" ;;
+    esac
     if sh "$tmp/install.sh" --activate >"$tmp/out" 2>&1 </dev/null; then echo 'activation accepted routing conflict' >&2; exit 1; fi
     grep -q 'activation refused because of an unmanaged routing conflict' "$tmp/out"
 done
 MOCK_CONFLICT=none; export MOCK_CONFLICT
 sh "$tmp/install.sh" --check >"$tmp/out" 2>&1
-if grep -q 'CONFLICT: mark 0x81, routing table 100' "$tmp/out"; then echo 'unrelated mark was rejected' >&2; exit 1; fi
+grep -Fq 'No known RouteCraft mark/table/process conflict found.' "$tmp/out"
 MOCK_CONFLICT=inspect_error; export MOCK_CONFLICT
 if sh "$tmp/install.sh" --activate >"$tmp/out" 2>&1 </dev/null; then echo 'activation accepted unreadable rules' >&2; exit 1; fi
 grep -q 'cannot inspect numeric policy-routing rules' "$tmp/out"
