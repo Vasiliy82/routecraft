@@ -27,10 +27,10 @@ func TestBuildWithoutVPNRequiresExplicitOmission(t *testing.T) {
 	if err := os.WriteFile(policyPath, []byte(input), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := build(policyPath, "", "", dir, "", "", "192.0.2.53", output, false); err == nil {
+	if err := build(policyPath, "", "", dir, "", "", "192.0.2.53", output, false, false); err == nil {
 		t.Fatal("missing VPN must fail without explicit omission")
 	}
-	if err := build(policyPath, "", "", dir, "", "", "192.0.2.53", output, true); err != nil {
+	if err := build(policyPath, "", "", dir, "", "", "192.0.2.53", output, true, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(output)
@@ -63,7 +63,7 @@ func TestBuildRejectsOmissionOfCustomOrDefaultVPNRule(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.input), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := build(path, "", "", dir, "", "", "192.0.2.53", filepath.Join(dir, "out"), true); err == nil {
+			if err := build(path, "", "", dir, "", "", "192.0.2.53", filepath.Join(dir, "out"), true, false); err == nil {
 				t.Fatal("expected rejection")
 			}
 		})
@@ -82,7 +82,7 @@ func TestBuildWithOnlySubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(dir, "out.json")
-	if err := build(policyPath, sub, "", dir, "", "", "192.0.2.53", output, true); err != nil {
+	if err := build(policyPath, sub, "", dir, "", "", "192.0.2.53", output, true, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(output)
@@ -111,7 +111,7 @@ func TestBuildKeepsTailscaleStateOutsideRuleGeneration(t *testing.T) {
 	state := filepath.Join(dir, "identity")
 	t.Setenv("ROUTECRAFT_TAILSCALE_STATE_DIR", state)
 	output := filepath.Join(dir, "out.json")
-	if err := build(policyPath, "", key, filepath.Join(dir, "generation"), "https://example.invalid", "100.64.0.1", "192.0.2.53", output, true); err != nil {
+	if err := build(policyPath, "", key, filepath.Join(dir, "generation"), "https://example.invalid", "100.64.0.1", "192.0.2.53", output, true, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(output)
@@ -128,5 +128,68 @@ func TestBuildKeepsTailscaleStateOutsideRuleGeneration(t *testing.T) {
 	}
 	if len(config.Endpoints) != 1 || config.Endpoints[0].State != state {
 		t.Fatalf("unexpected endpoint state: %+v", config.Endpoints)
+	}
+}
+
+func TestBuildDerivesDNSAndPinsSubscriptionNode(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "policy.yaml")
+	subscription := filepath.Join(dir, "subscription")
+	output := filepath.Join(dir, "sing-box.json")
+	input := "rules:\n  - name: ip-only\n    filter: [ipnet:203.0.113.0/24]\n    outbound: direct\n" +
+		"  - name: video\n    filter: [domain:example.net]\n    outbound: vpn-sub\n  - name: default\n    outbound: direct\n"
+	if err := os.WriteFile(settings, []byte(input), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := "vless://00000000-0000-4000-8000-000000000000@first.example:443"
+	second := "vless://00000000-0000-4000-8000-000000000000@second.example:443"
+	for _, nodes := range []string{first + "\n" + second, second + "\n" + first} {
+		if err := os.WriteFile(subscription, []byte(nodes), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, tags, err := parseSubscription([]byte(nodes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := build(settings, subscription, "", dir, "", "", "192.0.2.53", output, false, false); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var config struct {
+			DNS struct {
+				Servers []map[string]any
+				Rules   []map[string]any
+				Final   string
+			}
+			Outbounds []map[string]any
+			Route     struct{ Rules []map[string]any }
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			t.Fatal(err)
+		}
+		if config.DNS.Final != "routecraft-dns-direct" {
+			t.Fatalf("unexpected default resolver: %s", config.DNS.Final)
+		}
+		foundDNS := false
+		for _, server := range config.DNS.Servers {
+			if server["tag"] == "routecraft-dns-vpn-sub" {
+				foundDNS = server["detour"] == "vpn-sub" && server["type"] == "https"
+			}
+		}
+		if !foundDNS || config.DNS.Rules[len(config.DNS.Rules)-1]["server"] != "routecraft-dns-vpn-sub" {
+			t.Fatal("VLESS domain DNS must use the subscription outbound")
+		}
+		selector := config.Outbounds[len(config.Outbounds)-1]
+		if selector["tag"] != "vpn-sub" || selector["type"] != "selector" || selector["default"] != tags[0] {
+			t.Fatalf("subscription node is not pinned: %v", selector)
+		}
+		if !strings.Contains(string(data), `"tag": "routecraft-dns"`) ||
+			!strings.Contains(string(data), `"domain_regex"`) ||
+			config.Route.Rules[len(config.Route.Rules)-1]["outbound"] != "vpn-sub" {
+			t.Fatal("generated gateway must expose policy DNS and share the outbound for named connections")
+		}
 	}
 }

@@ -42,6 +42,7 @@ func main() {
 	dnsUpstream := flag.String("dns", "", "DNS upstream reachable from the gateway")
 	output := flag.String("output", "/tmp/routecraft/sing-box.json", "generated sing-box configuration")
 	omitInitial := flag.Bool("omit-unavailable-initial-vpn", false, "omit unavailable VPN rules from initial policy")
+	probeVLESS := flag.Bool("probe-vless", false, "select a VLESS node that successfully reaches DNS over HTTPS")
 	checkSubscription := flag.Bool("check-subscription", false, "validate a downloaded VLESS subscription without building a configuration")
 	listInterfaces := flag.Bool("list-interfaces", false, "list selectable Linux network devices")
 	checkInterface := flag.String("check-interface", "", "check whether a Linux network device is selectable")
@@ -426,15 +427,16 @@ func main() {
 		fmt.Println("VLESS subscription contains supported nodes.")
 		return
 	}
-	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial); err != nil {
+	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial, *probeVLESS); err != nil {
 		fmt.Fprintln(os.Stderr, "routecraft:", err)
 		os.Exit(1)
 	}
 }
 
-func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string, omitInitial bool) error {
-	if strings.TrimSpace(dnsUpstream) == "" {
-		return fmt.Errorf("DNS upstream is required")
+func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string, omitInitial, probeVLESS bool) error {
+	upstream, err := netip.ParseAddr(dnsUpstream)
+	if err != nil || upstream.IsLoopback() || upstream.IsUnspecified() || upstream.IsMulticast() || upstream.Zone() != "" {
+		return fmt.Errorf("DNS upstream must be a separate unicast DNS server IP")
 	}
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -457,6 +459,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	}
 	var nodes []map[string]any
 	var tags []string
+	var selectedVLESS string
 	if subscriptionPath != "" {
 		sub, err := os.ReadFile(subscriptionPath)
 		if err != nil {
@@ -465,6 +468,17 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		nodes, tags, err = parseSubscription(sub)
 		if err != nil {
 			return err
+		}
+		selectedVLESS = tags[0]
+		if probeVLESS {
+			selectedVLESS, err = selectVLESSNode(dataDir, upstream.String(), nodes, tags)
+			if err != nil {
+				if !omitInitial {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "VLESS is unavailable: %v. Checking whether the initial policy can continue without it.\n", err)
+				nodes, tags = nil, nil
+			}
 		}
 	}
 	var key []byte
@@ -489,6 +503,19 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	if _, ok := p.DNS["tailscale-exit"]; ok && len(key) == 0 {
 		return fmt.Errorf("DNS profile requires unavailable outbound tailscale-exit")
 	}
+	if p.DNS == nil {
+		p.DNS = make(map[string]policy.DNSProfile)
+	}
+	if _, ok := p.DNS["direct"]; !ok {
+		p.DNS["direct"] = policy.DNSProfile{Type: "udp", Server: upstream.String()}
+	}
+	vpnDNS := policy.DNSProfile{Type: "https", Server: "1.1.1.1", ServerName: "cloudflare-dns.com"}
+	if _, ok := p.DNS["vpn-sub"]; !ok && len(nodes) > 0 {
+		p.DNS["vpn-sub"] = vpnDNS
+	}
+	if _, ok := p.DNS["tailscale-exit"]; !ok && len(key) > 0 {
+		p.DNS["tailscale-exit"] = vpnDNS
+	}
 	categories := policy.Categories{Version: 1, Categories: map[string]string{}}
 	for _, rule := range p.Rules {
 		for _, raw := range rule.Filter {
@@ -511,15 +538,16 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		"vpn-sub":        {Type: "sing-box-tag", Tag: "vpn-sub"},
 		"tailscale-exit": {Type: "sing-box-tag", Tag: "tailscale-exit"},
 	}}
-	compiled, err := compiler.Compile(compiler.Input{Policy: p, Outbounds: outbounds, Categories: categories})
+	compiled, err := compiler.Compile(compiler.Input{
+		Policy: p, Outbounds: outbounds, Categories: categories, DomainRouting: true,
+	})
 	if err != nil {
 		return err
 	}
 	compiled.Outbounds = append(compiled.Outbounds, nodes...)
 	if len(nodes) > 0 {
 		compiled.Outbounds = append(compiled.Outbounds, map[string]any{
-			"type": "urltest", "tag": "vpn-sub", "outbounds": tags,
-			"url": "https://www.gstatic.com/generate_204", "interval": "5m", "tolerance": 100,
+			"type": "selector", "tag": "vpn-sub", "outbounds": tags, "default": selectedVLESS,
 		})
 	}
 	// Diagnostic listeners exercise each transport without changing the system route.
@@ -537,27 +565,19 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": "test-exit", "listen": "127.0.0.1", "listen_port": 1082})
 	}
 	// Bootstrap resolves transport endpoints independently from client DNS rules.
-	bootstrap := map[string]any{"type": "udp", "tag": "local-dns", "server": dnsUpstream}
-	var dns any = map[string]any{"servers": []any{bootstrap}, "final": "local-dns", "reverse_mapping": true}
-	if compiled.DNS != nil {
-		addr, err := netip.ParseAddr(dnsUpstream)
-		if err != nil || addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast() || addr.Zone() != "" {
-			return fmt.Errorf("Split DNS bootstrap requires a separate unicast DNS server IP")
-		}
-		compiled.DNS.Servers = append(compiled.DNS.Servers, bootstrap)
-		const healthName = "routecraft-health.example.com"
-		compiled.DNS.Rules = append([]map[string]any{
-			{"domain": []string{healthName}, "query_type": []string{"A"}, "action": "predefined", "answer": []string{healthName + ". 0 IN A 192.0.2.1"}},
-			{"domain": []string{healthName}, "query_type": []string{"TXT"}, "action": "predefined", "answer": []string{healthName + `. 0 IN TXT "routecraft-dns-ready"`}},
-		}, compiled.DNS.Rules...)
-		dns = compiled.DNS
-		inbounds = append(inbounds, map[string]any{"type": "direct", "tag": "routecraft-dns", "listen": "127.0.0.1", "listen_port": 10553})
-		rules = append(rules, map[string]any{"inbound": []string{"routecraft-dns"}, "action": "hijack-dns"})
-	}
+	bootstrap := map[string]any{"type": "udp", "tag": "local-dns", "server": upstream.String()}
+	compiled.DNS.Servers = append(compiled.DNS.Servers, bootstrap)
+	const healthName = "routecraft-health.example.com"
+	compiled.DNS.Rules = append([]map[string]any{
+		{"domain": []string{healthName}, "query_type": []string{"A"}, "action": "predefined", "answer": []string{healthName + ". 0 IN A 192.0.2.1"}},
+		{"domain": []string{healthName}, "query_type": []string{"TXT"}, "action": "predefined", "answer": []string{healthName + `. 0 IN TXT "routecraft-dns-ready"`}},
+	}, compiled.DNS.Rules...)
+	inbounds = append(inbounds, map[string]any{"type": "direct", "tag": "routecraft-dns", "listen": "127.0.0.1", "listen_port": 10553})
+	rules = append(rules, map[string]any{"inbound": []string{"routecraft-dns"}, "action": "hijack-dns"})
 	rules = append(rules, compiled.Route.Rules...)
 	config := map[string]any{
 		"log":       map[string]any{"level": "debug"},
-		"dns":       dns,
+		"dns":       compiled.DNS,
 		"inbounds":  inbounds,
 		"outbounds": compiled.Outbounds,
 		"route":     map[string]any{"rules": rules, "rule_set": compiled.Route.RuleSet, "final": compiled.Route.Final, "default_domain_resolver": "local-dns"},

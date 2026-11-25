@@ -79,24 +79,35 @@ if [ -z "$subscription_path" ]; then
     fi
     echo 'VLESS is unavailable. Continuing the first installation without a VLESS outbound.' >&2
 fi
-base=https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo
+geodata_host=raw.githubusercontent.com
+geodata_ip=
+fetch_geodata() {
+    if [ -z "$geodata_ip" ]; then
+        geodata_ip=$(nslookup -type=A "$geodata_host" "$dns_upstream" 2>/dev/null |
+            awk '$1 == "Name:" { answer = 1 } answer && $1 == "Address:" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2; exit }')
+        [ -n "$geodata_ip" ] || { echo 'ERROR: bootstrap DNS could not resolve the geodata source.' >&2; return 1; }
+    fi
+    curl -fsSL --resolve "$geodata_host:443:$geodata_ip" --connect-timeout 5 --max-time 30 "$1" -o "$2"
+}
+base="https://$geodata_host/MetaCubeX/meta-rules-dat/sing/geo"
 if [ "$initial_optional" != 1 ] || [ -n "$exit_node" ]; then
     for name in openai cursor anthropic; do
-        curl -fsSL --connect-timeout 5 --max-time 30 "$base/geosite/$name.srs" -o "$generation_tmp/geosite/$name.srs"
+        fetch_geodata "$base/geosite/$name.srs" "$generation_tmp/geosite/$name.srs"
     done
 fi
-extra=https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box
+extra="https://$geodata_host/runetfreedom/russia-v2ray-rules-dat/release/sing-box"
 if [ "$initial_optional" != 1 ] || [ -n "$subscription_path" ]; then
     for name in youtube telegram whatsapp; do
-        curl -fsSL --connect-timeout 5 --max-time 30 "$base/geosite/$name.srs" -o "$generation_tmp/geosite/$name.srs"
+        fetch_geodata "$base/geosite/$name.srs" "$generation_tmp/geosite/$name.srs"
     done
-    curl -fsSL --connect-timeout 5 --max-time 30 "$base/geoip/telegram.srs" -o "$generation_tmp/geoip/telegram.srs"
-    curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geosite/geosite-ru-blocked.srs" -o "$generation_tmp/geosite/ru-blocked.srs"
-    curl -fsSL --connect-timeout 5 --max-time 30 "$extra/rule-set-geoip/geoip-ru-blocked.srs" -o "$generation_tmp/geoip/ru-blocked.srs"
+    fetch_geodata "$base/geoip/telegram.srs" "$generation_tmp/geoip/telegram.srs"
+    fetch_geodata "$extra/rule-set-geosite/geosite-ru-blocked.srs" "$generation_tmp/geosite/ru-blocked.srs"
+    fetch_geodata "$extra/rule-set-geoip/geoip-ru-blocked.srs" "$generation_tmp/geoip/ru-blocked.srs"
 fi
 
 set --
 if [ "$initial_optional" = 1 ]; then set -- -omit-unavailable-initial-vpn; fi
+if [ -n "$subscription_path" ]; then set -- "$@" -probe-vless; fi
 ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-build" "$@" -policy "$dir/policy.yaml" -subscription "$subscription_path" \
     -headscale-key "$key_file" -data "$generation_tmp" -headscale "$control" -exit-node "$exit_node" \
     -dns "$dns_upstream" -output "$candidate_tmp"

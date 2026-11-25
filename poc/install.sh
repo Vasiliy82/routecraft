@@ -205,9 +205,12 @@ case "$mode" in
         fi
         mkdir -p "$destination"
         cp -f "$builder" "$destination/routecraft-build"
-        for file in TARGET_ARCH configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init policy.yaml; do
+        for file in TARGET_ARCH configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init; do
             [ ! -f "$bundle_dir/$file" ] || cp -f "$bundle_dir/$file" "$destination/$file"
         done
+        if [ ! -e "$destination/policy.yaml" ]; then
+            cp -f "$bundle_dir/policy.yaml" "$destination/policy.yaml"
+        fi
         chmod 700 "$destination/routecraft-build"
         chmod 755 "$destination"/*.sh "$destination"/routecraft.init
         echo "Bundle staged at $destination. No service, routes, or firewall rules were changed."

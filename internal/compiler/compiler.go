@@ -15,6 +15,8 @@ type Input struct {
 	Policy     policy.Policy
 	Outbounds  policy.Outbounds
 	Categories policy.Categories
+	// Route by the same domain rules as DNS whenever the destination name is known.
+	DomainRouting bool
 }
 
 // Artifacts is a sing-box fragment. The runtime supplies inbounds, bootstrap
@@ -106,10 +108,16 @@ func Compile(in Input) (Artifacts, error) {
 			case "network":
 				condition["network"] = value
 			}
-			alternatives = append(alternatives, condition)
-			if result.DNS != nil && policy.IsDomainFilter(kind) {
+			domainFilter := policy.IsDomainFilter(kind)
+			if result.DNS != nil && domainFilter {
 				dnsAlternatives = append(dnsAlternatives, condition)
 			}
+			if in.DomainRouting && !domainFilter {
+				condition = map[string]any{"type": "logical", "mode": "and", "rules": []map[string]any{
+					condition, {"domain_regex": []string{".+"}, "invert": true},
+				}}
+			}
+			alternatives = append(alternatives, condition)
 		}
 		compiled := map[string]any{"type": "logical", "mode": "or", "rules": alternatives}
 		if outbound.Type == "reject" {

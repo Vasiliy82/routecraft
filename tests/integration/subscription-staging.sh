@@ -14,7 +14,8 @@ cat >"$tmp/bin/curl" <<'EOF'
 case "$*" in
     *private-token*) exit 1 ;;
     *'--config -'*) IFS= read -r config; [ "$config" = 'url = "https://example.invalid/private-token"' ] || exit 1 ;;
-    *) [ "$MODE" = valid_all ] || exit 1 ;;
+    *) [ "$MODE" = valid_all ] || exit 1
+       case "$*" in *'--resolve raw.githubusercontent.com:443:192.0.2.55'*) ;; *) exit 1 ;; esac ;;
 esac
 [ "$MODE" != download_error ] || exit 22
 while [ "$#" -gt 0 ]; do
@@ -22,6 +23,11 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 exit 1
+EOF
+cat >"$tmp/bin/nslookup" <<'EOF'
+#!/bin/sh
+[ "$*" = '-type=A raw.githubusercontent.com 192.0.2.53' ] || exit 1
+printf '%s\n' 'Name: raw.githubusercontent.com' 'Address: 192.0.2.55'
 EOF
 cat >"$tmp/site/routecraft-build" <<'EOF'
 #!/bin/sh
@@ -34,7 +40,7 @@ cat >"$tmp/bin/sing-box" <<'EOF'
 #!/bin/sh
 [ "${FAIL_CHECK:-0}" != 1 ]
 EOF
-chmod +x "$tmp/bin/curl" "$tmp/site/routecraft-build"
+chmod +x "$tmp/bin/curl" "$tmp/bin/nslookup" "$tmp/site/routecraft-build"
 chmod +x "$tmp/bin/sing-box"
 PATH="$tmp/bin:$PATH"; export PATH
 ROUTECRAFT_DIR="$tmp/site" ROUTECRAFT_EXIT_NODE=100.64.0.1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53
