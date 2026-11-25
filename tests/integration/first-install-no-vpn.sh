@@ -22,6 +22,7 @@ before=$(sha256sum /etc/config/dhcp /etc/config/network)
 printf 'n\n\n\n\n192.0.2.53\n\nn\n' |
     PATH="$tmp/bin:$PATH" ROUTECRAFT_DIR="$tmp/site" ROUTECRAFT_SECRET_DIR="$tmp/secrets" sh "$tmp/site/configure.sh" >"$tmp/out" 2>"$tmp/err"
 grep -q 'Omitting initial rule' "$tmp/err"
+grep -Fq 'Continuing the first installation without a VLESS outbound.' "$tmp/err"
 sha256sum -c "$tmp/site/candidate.sha256" >/dev/null
 if grep -Eq 'vpn-sub|tailscale-exit' "$tmp/site/sing-box.candidate.json"; then echo 'unexpected VPN reference' >&2; exit 1; fi
 [ ! -e "$tmp/site/sing-box.json" ] && [ ! -e "$tmp/site/.update.lock" ]

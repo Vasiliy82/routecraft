@@ -29,6 +29,30 @@ for name in configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh 
 done
 grep -q '^dir=/etc/routecraft$' "$work/routecraft.init"
 grep -q '^sh /etc/routecraft/configure.sh$' "$(dirname -- "$0")/../../poc/install-openwrt.sh"
+mkdir "$work/bin-stubs"
+cat >"$work/bin-stubs/uname" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$BUNDLE_ARCH"
+EOF
+cat >"$work/bin-stubs/uclient-fetch" <<'EOF'
+#!/bin/sh
+[ "$#" -eq 4 ] && [ "$1" = -4 ] && [ "$2" = -O ]
+cp "$BUNDLE_DIR/${4##*/}" "$3"
+EOF
+cat >"$work/bin-stubs/sh" <<'EOF'
+#!/bin/sh
+case "$1" in
+    */install.sh)
+        [ "$2" = --install ] && [ -x "${1%/install.sh}/bin/routecraft-build" ]
+        ;;
+    /etc/routecraft/configure.sh) exit 0 ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 700 "$work/bin-stubs/"*
+BUNDLE_ARCH="$arch" BUNDLE_DIR="$bundle_dir" PATH="$work/bin-stubs:$PATH" \
+    "$(command -v sh)" "$(dirname -- "$0")/../../poc/install-openwrt.sh"
+
 if env -i PATH="$PATH" ROUTECRAFT_DIR="$work/empty" sh "$work/start.sh" >"$work/out" 2>&1; then
     echo 'start.sh unexpectedly succeeded without DNS' >&2; exit 1
 fi

@@ -72,9 +72,12 @@ if [ -n "$subscription_url" ]; then
         subscription_tmp=
     fi
 fi
-if [ -z "$subscription_path" ] && [ "$initial_optional" != 1 ]; then
-    echo 'ERROR: a valid VLESS subscription is required.' >&2
-    exit 1
+if [ -z "$subscription_path" ]; then
+    if [ "$initial_optional" != 1 ]; then
+        echo 'ERROR: a valid VLESS subscription is required.' >&2
+        exit 1
+    fi
+    echo 'VLESS is unavailable. Continuing the first installation without a VLESS outbound.' >&2
 fi
 base=https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo
 if [ "$initial_optional" != 1 ] || [ -n "$exit_node" ]; then

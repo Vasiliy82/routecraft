@@ -48,6 +48,7 @@ download "$bundle_base/$archive" "$temporary/$archive"
 download "$bundle_base/$archive.sha256" "$temporary/$archive.sha256"
 (cd "$temporary" && sha256sum -c "$archive.sha256")
 tar -xzf "$temporary/$archive" -C "$temporary"
+chmod 700 "$temporary/bin/routecraft-build"
 
 echo "Installing RouteCraft PoC for $system_arch. The helper will install missing OpenWrt packages."
 sh "$temporary/install.sh" --install
