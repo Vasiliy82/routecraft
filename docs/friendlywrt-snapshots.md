@@ -8,6 +8,8 @@
 curl -fsSL https://raw.githubusercontent.com/Vasiliy82/routecraft/main/snapshot/setup.sh | sh
 ```
 
+Повторный запуск обновляет оба скрипта и сохраняет снимки. Версия указана в первой строке справки `snapshotctl help`.
+
 ## Вернуть доступ после firstboot
 
 После заводского сброса и загрузки роутера выполните:
@@ -22,8 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/Vasiliy82/routecraft/main/snapshot/
 
 ```sh
 snapshotctl create golden
+snapshotctl list
 snapshotctl restore golden
 snapshotctl delete golden
 ```
 
-`restore` пишет образ в активный `userdata` через `dd` и сразу перезагружает роутер. Работа со смонтированным ext4 может привести к несогласованному снимку или откату. На R28S запись и перезагрузка остаются непроверенными.
+`restore` пишет образ в активный `userdata` через `dd` и сразу перезагружает роутер. Работа со смонтированным ext4 может привести к несогласованному снимку или откату. Создание и вывод списка проверены на R28S. Запись в активный `userdata` с перезагрузкой проверена на файловой имитации.

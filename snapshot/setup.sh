@@ -101,14 +101,18 @@ write_cli() {
 set -eu
 umask 077
 
+version=0.2.0
+
 fail() {
 	printf '%s\n' "snapshotctl: $*" >&2
 	exit 1
 }
 
 usage() {
+	printf 'snapshotctl %s\n' "$version"
 	cat <<'HELP'
 snapshotctl create NAME
+snapshotctl list
 snapshotctl restore NAME   # write userdata and immediately force reboot
 snapshotctl delete NAME
 HELP
@@ -116,6 +120,7 @@ HELP
 
 case "${1:-}" in
 	''|help|-h|--help) usage; exit 0 ;;
+	list) [ "$#" -eq 1 ] || fail 'usage: snapshotctl list' ;;
 	create|restore|delete)
 		[ "$#" -eq 2 ] || fail "usage: snapshotctl $1 NAME"
 		case "$2" in
@@ -133,11 +138,29 @@ store=/persistent/snapshots
 	fail 'run setup.sh to configure the snapshot directory'
 exec 9>"$store/.lock"
 flock -n 9 || fail 'another snapshot command is running'
+
+if [ "$1" = list ]; then
+	for file in "$store"/*.img; do
+		[ -f "$file" ] && [ ! -L "$file" ] || continue
+		name=${file##*/}
+		printf '%s\n' "${name%.img}"
+	done
+	exit 0
+fi
+
+userdata_bytes() {
+	# Linux reports block device size in units of 512 bytes here.
+	sectors=$(cat "/sys/class/block/${data##*/}/size") || fail 'cannot read userdata size'
+	case "$sectors" in ''|*[!0-9]*) fail 'invalid userdata size' ;; esac
+	[ "$sectors" -gt 0 ] || fail 'invalid userdata size'
+	printf '%s\n' "$((sectors * 512))"
+}
+
 image=$store/$2.img
 case "$1" in
 	create)
 		[ ! -e "$image" ] && [ ! -L "$image" ] || fail 'snapshot already exists'
-		bytes=$(blockdev --getsize64 "$data")
+		bytes=$(userdata_bytes)
 		free_kb=$(df -Pk "$store" | awk 'END {print $4}')
 		[ "$free_kb" -gt "$((bytes / 1024))" ] || fail 'not enough free space'
 		tmp=$(mktemp "$store/.capture.XXXXXX")
@@ -149,7 +172,8 @@ case "$1" in
 		;;
 	restore)
 		[ -f "$image" ] && [ ! -L "$image" ] || fail 'snapshot not found'
-		[ "$(stat -c '%s' "$image")" -eq "$(blockdev --getsize64 "$data")" ] ||
+		bytes=$(userdata_bytes)
+		[ "$(stat -c '%s' "$image")" -eq "$bytes" ] ||
 			fail 'snapshot size differs from userdata'
 		dd if="$image" of="$data" bs=1M conv=fsync ||
 			fail 'write failed; userdata may be partially overwritten'
