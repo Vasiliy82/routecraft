@@ -101,7 +101,7 @@ write_cli() {
 set -eu
 umask 077
 
-version=0.2.0
+version=0.2.1
 
 fail() {
 	printf '%s\n' "snapshotctl: $*" >&2
@@ -132,6 +132,7 @@ case "${1:-}" in
 esac
 
 [ "$(id -u)" = 0 ] || fail 'run as root'
+set -o pipefail
 data=$(sh /persistent/bin/after-firstboot.sh --userdata)
 store=/persistent/snapshots
 [ -d "$store" ] && [ ! -L "$store" ] && [ "$(stat -c '%u:%a' "$store")" = '0:700' ] ||
@@ -140,10 +141,11 @@ exec 9>"$store/.lock"
 flock -n 9 || fail 'another snapshot command is running'
 
 if [ "$1" = list ]; then
-	for file in "$store"/*.img; do
-		[ -f "$file" ] && [ ! -L "$file" ] || continue
-		name=${file##*/}
-		printf '%s\n' "${name%.img}"
+	for dir in "$store"/*.snapshot; do
+		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
+		[ -f "$dir/image.gz" ] && [ -f "$dir/image.sha256" ] || continue
+		name=${dir##*/}
+		printf '%s\n' "${name%.snapshot}"
 	done
 	exit 0
 fi
@@ -156,32 +158,49 @@ userdata_bytes() {
 	printf '%s\n' "$((sectors * 512))"
 }
 
-image=$store/$2.img
+checksum() {
+	result=$(sha256sum "$1") || return 1
+	printf '%s\n' "${result%% *}"
+}
+
+check_size() {
+	bytes=$(userdata_bytes) || return 1
+	decoded=$(gzip -dc "$1" | wc -c) || fail 'invalid gzip image'
+	[ "$decoded" -eq "$bytes" ] || fail 'snapshot size differs from userdata'
+}
+
+snapshot=$store/$2.snapshot
+image=$snapshot/image.gz
+digest=$snapshot/image.sha256
 case "$1" in
 	create)
-		[ ! -e "$image" ] && [ ! -L "$image" ] || fail 'snapshot already exists'
-		bytes=$(userdata_bytes)
-		free_kb=$(df -Pk "$store" | awk 'END {print $4}')
-		[ "$free_kb" -gt "$((bytes / 1024))" ] || fail 'not enough free space'
-		tmp=$(mktemp "$store/.capture.XXXXXX")
-		trap 'rm -f "$tmp"' EXIT
+		[ ! -e "$snapshot" ] && [ ! -L "$snapshot" ] || fail 'snapshot already exists'
+		tmp=$(mktemp -d "$store/.capture.XXXXXX")
+		trap 'rm -f "$tmp/image.gz" "$tmp/image.sha256"; if [ -d "$tmp" ]; then rmdir "$tmp"; fi' EXIT
 		trap 'exit 1' HUP INT TERM
-		dd if="$data" of="$tmp" bs=1M conv=fsync
-		[ "$(stat -c '%s' "$tmp")" -eq "$bytes" ] || fail 'short read from userdata'
-		mv -T "$tmp" "$image"
+		dd if="$data" bs=1M | gzip -1 > "$tmp/image.gz" ||
+			fail 'cannot read userdata or write compressed snapshot'
+		check_size "$tmp/image.gz"
+		checksum "$tmp/image.gz" > "$tmp/image.sha256"
+		mv -T "$tmp" "$snapshot"
+		sync
 		;;
 	restore)
-		[ -f "$image" ] && [ ! -L "$image" ] || fail 'snapshot not found'
-		bytes=$(userdata_bytes)
-		[ "$(stat -c '%s' "$image")" -eq "$bytes" ] ||
-			fail 'snapshot size differs from userdata'
-		dd if="$image" of="$data" bs=1M conv=fsync ||
+		[ -d "$snapshot" ] && [ ! -L "$snapshot" ] || fail 'snapshot not found'
+		[ -f "$image" ] && [ ! -L "$image" ] && [ -f "$digest" ] && [ ! -L "$digest" ] ||
+			fail 'snapshot is missing its image or checksum'
+		actual=$(checksum "$image") || fail 'cannot calculate snapshot checksum'
+		expected=$(cat "$digest") || fail 'cannot read snapshot checksum'
+		[ "$actual" = "$expected" ] || fail 'snapshot SHA-256 mismatch'
+		check_size "$image"
+		gzip -dc "$image" | dd of="$data" bs=1M conv=fsync ||
 			fail 'write failed; userdata may be partially overwritten'
 		exec reboot -f
 		;;
 	delete)
-		[ -f "$image" ] && [ ! -L "$image" ] || fail 'snapshot not found'
-		rm "$image"
+		[ -d "$snapshot" ] && [ ! -L "$snapshot" ] || fail 'snapshot not found'
+		rm -f "$image" "$digest"
+		rmdir "$snapshot"
 		;;
 esac
 SNAPSHOT_CLI_SCRIPT
