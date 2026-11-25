@@ -231,9 +231,18 @@ case "$mode" in
             echo 'ERROR: configure.sh has not produced a validated candidate.'
             exit 1
         fi
-        printf 'This starts RouteCraft routing on this gateway. Type ACTIVATE to continue: '
-        IFS= read -r confirmation
-        [ "$confirmation" = ACTIVATE ] || { echo 'Activation cancelled; active config unchanged.'; exit 1; }
+        while true; do
+            printf 'Activate it now? (y/n): '
+            if ! IFS= read -r confirmation; then
+                echo 'Activation cancelled: input closed.' >&2
+                exit 1
+            fi
+            case "$confirmation" in
+                y) break ;;
+                n) echo 'Activation declined.'; exit 0 ;;
+                *) echo 'Please answer y or n.' ;;
+            esac
+        done
         lock_dir="$destination/.update.lock"
         mkdir "$lock_dir" 2>/dev/null || { echo 'ERROR: another RouteCraft update is running, or its lock needs inspection.' >&2; exit 1; }
         printf '%s\n' "$$" >"$lock_dir/owner"

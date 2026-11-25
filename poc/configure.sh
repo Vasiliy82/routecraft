@@ -286,6 +286,4 @@ rm -f "$lock_dir/owner"
 rmdir "$lock_dir"
 trap - EXIT HUP INT TERM
 echo "Configuration candidate prepared. No active config, service, route, or firewall rule was changed."
-printf 'Activate it now? (y/N): '
-IFS= read -r answer
-case "$answer" in y|Y|yes|YES) sh "$dir/install.sh" --activate ;; *) echo "Candidate remains at $dir/sing-box.candidate.json.";; esac
+sh "$dir/install.sh" --activate
