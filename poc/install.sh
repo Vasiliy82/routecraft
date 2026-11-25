@@ -400,10 +400,16 @@ case "$mode" in
             echo 'ERROR: enabling the RouteCraft service failed.' >&2
         fi
         if [ "$service_ok" -eq 1 ] && [ "$split_apply" -eq 1 ]; then
+            if [ "$split_mode" = on ]; then
+                echo 'RouteCraft activation: waiting for the Split DNS listener over UDP and TCP.'
+                # procd can report the process running before sing-box binds its listeners.
+                if ! "$destination/routecraft-build" -check-dns 127.0.0.1:10553 \
+                    -dns-probe-name routecraft-health.example.com. -dns-wait 60s; then
+                    exit 1
+                fi
+            fi
             split_changed=1
-            if [ "$split_mode" = on ] && ! "$destination/routecraft-build" -check-dns 127.0.0.1:10553 -dns-probe-name routecraft-health.example.com.; then
-                service_ok=0
-            elif ! sh "$destination/dnsmasq-split.sh" "$split_mode" "$split_state"; then
+            if ! sh "$destination/dnsmasq-split.sh" "$split_mode" "$split_state"; then
                 service_ok=0
             elif [ "$split_mode" = on ]; then
                 service_ok=0

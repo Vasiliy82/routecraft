@@ -3,6 +3,7 @@ package dnsprobe
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -96,5 +97,10 @@ func TestCheckRequiresUDPAndTCP(t *testing.T) {
 	defer cancel2()
 	if err := Check(ctx2, udp.LocalAddr().String(), "example.invalid."); err == nil {
 		t.Fatal("accepted unavailable TCP listener")
+	}
+	waitCtx, stopWaiting := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stopWaiting()
+	if err := Wait(waitCtx, udp.LocalAddr().String(), "example.invalid."); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait with unavailable TCP listener returned %v", err)
 	}
 }

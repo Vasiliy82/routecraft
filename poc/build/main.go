@@ -65,6 +65,7 @@ func main() {
 	uciCurrent := flag.String("uci-current", "", "current UCI section snapshot")
 	checkDNS := flag.String("check-dns", "", "check an IP DNS listener over UDP and TCP")
 	dnsProbeName := flag.String("dns-probe-name", "example.com.", "absolute name for the DNS listener check")
+	dnsWait := flag.Duration("dns-wait", 0, "maximum time to retry the DNS listener check")
 	dnsStatus := flag.String("dns-status", "", "inspect dnsmasq instances in a UCI status file")
 	dnsPlan := flag.String("dns-plan", "", "prepare a DNS binding plan from JSON input")
 	uciDNSPlan := flag.String("uci-dns-plan", "", "prepare a scoped UCI DNS request")
@@ -203,9 +204,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, "routecraft: invalid DNS listener address")
 			os.Exit(1)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if *dnsWait < 0 {
+			fmt.Fprintln(os.Stderr, "routecraft: DNS wait duration cannot be negative")
+			os.Exit(1)
+		}
+		timeout, probe := 10*time.Second, dnsprobe.Check
+		if *dnsWait > 0 {
+			timeout, probe = *dnsWait, dnsprobe.Wait
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		if err := dnsprobe.Check(ctx, endpoint.String(), *dnsProbeName); err != nil {
+		if err := probe(ctx, endpoint.String(), *dnsProbeName); err != nil {
 			fmt.Fprintln(os.Stderr, "routecraft:", err)
 			os.Exit(1)
 		}
