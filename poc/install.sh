@@ -211,11 +211,14 @@ case "$mode" in
             [ -s "$bundle_dir/$file" ] || { echo "ERROR: bundled $file is missing." >&2; exit 1; }
         done
         destination=/etc/routecraft
+        echo 'INFO: Installing the bundle files and subscription updater.'
         if [ -d "$destination" ] && [ "$external_snapshot" -eq 0 ]; then
             backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
             mkdir -p "$backup"
             cp -a "$destination" "$backup/"
             echo "Existing RouteCraft directory backed up to $backup."
+        elif [ "$external_snapshot" -eq 1 ]; then
+            echo 'INFO: Using external snapshot recovery; skipping installer recovery copies.'
         fi
         mkdir -p "$destination"
         cp -f "$builder" "$destination/routecraft-build"
@@ -231,7 +234,10 @@ case "$mode" in
         done
         rm -f "$destination/subscription-poc.sh"
         if [ ! -e "$destination/policy.yaml" ]; then
+            echo 'INFO: Installing the default routing policy.'
             cp -f "$bundle_dir/policy.yaml" "$destination/policy.yaml"
+        else
+            echo 'INFO: Using the existing routing policy.'
         fi
         chmod 700 "$destination/routecraft-build"
         chmod 755 "$destination"/*.sh "$destination"/routecraft.init

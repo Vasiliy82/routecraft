@@ -11,18 +11,23 @@ printf '%s\n' 'https://example.invalid/private-token' >"$tmp/site/subscription.u
 printf '%s\n' 'previous-good' >"$tmp/site/subscription.raw"
 cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
-case "$*" in
-    *private-token*) exit 1 ;;
-    *'--config -'*) IFS= read -r config; [ "$config" = 'url = "https://example.invalid/private-token"' ] || exit 1 ;;
-    *) [ "$MODE" = valid_all ] || exit 1
-       case "$*" in *'--resolve raw.githubusercontent.com:443:192.0.2.55'*) ;; *) exit 1 ;; esac ;;
-esac
-[ "$MODE" != download_error ] || exit 22
+[ "$MODE" = valid_all ] || exit 1
+case "$*" in *'--resolve raw.githubusercontent.com:443:192.0.2.55'*) ;; *) exit 1 ;; esac
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then shift; printf '%s\n' "$MODE" >"$1"; exit 0; fi
     shift
 done
 exit 1
+EOF
+cat >"$tmp/site/subscription-probe.sh" <<'EOF'
+#!/bin/sh
+set -eu
+test "$#" -eq 1
+test "$(cat)" = https://example.invalid/private-token
+case "$MODE" in download_error|malformed) exit 1 ;; esac
+mkdir -p "$1"
+jq -n '{url:"https://example.invalid/private-token",selected:1,
+       nodes:[{status:"working",sing_box:{type:"hysteria2",tag:"candidate"}}]}' >"$1/current.json"
 EOF
 cat >"$tmp/bin/nslookup" <<'EOF'
 #!/bin/sh
@@ -31,10 +36,15 @@ printf '%s\n' 'Name: raw.githubusercontent.com' 'Address: 192.0.2.55'
 EOF
 cat >"$tmp/site/routecraft-build" <<'EOF'
 #!/bin/sh
-case "$1" in
-  -check-subscription) case "$(cat "$3")" in valid|valid_all) exit 0;; *) exit 1;; esac;;
-  *) exit 0;;
-esac
+set -eu
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -vpn-outbound) jq -e '.type=="hysteria2"' "$2" >/dev/null; exit ;;
+        -probe-vless|-check-subscription) exit 1 ;;
+    esac
+    shift
+done
+exit 1
 EOF
 cat >"$tmp/bin/sing-box" <<'EOF'
 #!/bin/sh
@@ -77,7 +87,7 @@ if sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"; then echo 'expected validat
 [ -z "$(find "$tmp/site/generations" -mindepth 1 -print)" ]
 FAIL_CHECK=0; export FAIL_CHECK
 sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"
-[ "$(cat "$tmp/site/subscription.raw")" = valid_all ]
+[ "$(cat "$tmp/site/subscription.raw")" = previous-good ]
 [ "$(cat "$tmp/site/geosite/openai.srs")" = old-geodata ]
 [ -n "$(find "$tmp/site/generations" -mindepth 1 -print)" ]
 [ -z "$(find "$tmp/site" -name '.subscription.*' -print)" ]

@@ -4,7 +4,9 @@ umask 077
 
 # Internal worker for subscription.sh. It takes a private state path and reads the URL from stdin.
 die() { printf '%s\n' "$1" >&2; exit 1; }
-progress() { if [ -t 2 ]; then printf '%s\n' "$1" >&2; fi; }
+verbose=0
+if [ -t 2 ] || [ "${ROUTECRAFT_PROBE_PROGRESS:-0}" = 1 ]; then verbose=1; fi
+progress() { if [ "$verbose" -eq 1 ]; then printf '%s\n' "$1" >&2; fi; }
 
 [ "$#" -eq 1 ] || die 'Use subscription.sh for subscription commands.'
 state="$1"
@@ -469,7 +471,7 @@ while IFS= read -r row; do
     index=$((index + 1))
     status=$(printf '%s\n' "$row" | jq -r '.status')
     public_ip=
-    if [ -t 2 ]; then
+    if [ "$verbose" -eq 1 ]; then
         heading=$(printf '%s\n' "$row" | jq -r '
             def shown_name:
                 (.name // "" | strings | explode |
@@ -507,7 +509,7 @@ while IFS= read -r row; do
         selected="$index"
         marker=' (first working)'
     fi
-    if [ -t 2 ]; then
+    if [ "$verbose" -eq 1 ]; then
         progress "[$index/$total] $heading: $status${public_ip:+ ip=$public_ip}$marker"
     fi
     printf '%s\n' "$row" | jq -c --arg status "$status" --arg ip "$public_ip" \
@@ -520,7 +522,7 @@ printf '%s' "$agent" > "$work/user-agent"
 jq -n --argjson selected "$selected" --rawfile url "$work/url" --rawfile user_agent "$work/user-agent" \
     --slurpfile nodes "$work/nodes" --slurpfile metadata "$work/metadata" \
     '{url:$url,user_agent:$user_agent,selected:$selected,nodes:$nodes[0],metadata:$metadata[0]}' > "$work/current"
-if [ ! -t 1 ] || [ ! -t 2 ]; then show_nodes "$work/current"; fi
+if [ "$verbose" -eq 0 ] || { [ -t 2 ] && [ ! -t 1 ]; }; then show_nodes "$work/current"; fi
 [ "$selected" -gt 0 ] || fail_attempt 'No connection completed the VPN HTTPS probe.'
 save_attempt ''
 publish "$work/current" current.json

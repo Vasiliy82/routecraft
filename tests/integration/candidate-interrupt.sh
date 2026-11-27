@@ -10,13 +10,12 @@ mkdir -p "$tmp/bin" "$tmp/site"
 printf 'https://example.invalid/sub\n' >"$tmp/site/subscription.url"
 printf 'previous\n' >"$tmp/site/subscription.raw"
 printf 'active\n' >"$tmp/site/sing-box.json"
-cat >"$tmp/bin/curl" <<'EOF'
+cat >"$tmp/site/subscription-probe.sh" <<'EOF'
 #!/bin/sh
 : >"$MOCK_READY"
 sleep 2
 exit 1
 EOF
-chmod +x "$tmp/bin/curl"
 PATH="$tmp/bin:$PATH" ROUTECRAFT_DIR="$tmp/site" ROUTECRAFT_EXIT_NODE=100.64.0.1 ROUTECRAFT_DNS_UPSTREAM=192.0.2.53 MOCK_READY="$tmp/ready"
 export PATH ROUTECRAFT_DIR ROUTECRAFT_EXIT_NODE ROUTECRAFT_DNS_UPSTREAM MOCK_READY
 sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err" &

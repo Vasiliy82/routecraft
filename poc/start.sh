@@ -16,8 +16,8 @@ else
 fi
 generation_tmp=
 candidate_tmp=
-subscription_tmp=
-trap 'if [ -n "$candidate_tmp" ]; then rm -f "$candidate_tmp"; fi; if [ -n "$subscription_tmp" ]; then rm -f "$subscription_tmp"; fi; if [ -n "$generation_tmp" ]; then rm -rf "$generation_tmp"; fi; if [ "$owns_lock" = 1 ]; then rm -f "$lock_dir/owner"; rmdir "$lock_dir" 2>/dev/null || true; fi' EXIT
+outbound_tmp=
+trap 'if [ -n "$candidate_tmp" ]; then rm -f "$candidate_tmp"; fi; if [ -n "$outbound_tmp" ]; then rm -f "$outbound_tmp"; fi; if [ -n "$generation_tmp" ]; then rm -rf "$generation_tmp"; fi; if [ "$owns_lock" = 1 ]; then rm -f "$lock_dir/owner"; rmdir "$lock_dir" 2>/dev/null || true; fi' EXIT
 trap 'exit 1' HUP INT TERM
 site_env=${ROUTECRAFT_SITE_ENV:-$dir/site.env}
 if [ -f "$site_env" ]; then
@@ -50,43 +50,38 @@ mkdir -p "$dir/generations"
 generation_tmp=$(mktemp -d "$dir/generations/generation.XXXXXX")
 mkdir -p "$generation_tmp/geosite" "$generation_tmp/geoip"
 candidate_tmp=$(mktemp "$dir/.config.XXXXXX")
-# Download and validate in a private temporary file. A failed refresh must not
-# truncate the last usable subscription, even when the server returns HTTP 200
-# with an unsupported or malformed payload. Never include the URL in errors.
-subscription_path=
-subscription_url=
-[ ! -s "$url_file" ] || subscription_url=$(cat "$url_file")
-if [ -n "$subscription_url" ]; then
-    case "$subscription_url" in
-        *[[:space:]]*) echo 'ERROR: subscription URL must be a single value.' >&2; exit 1 ;;
-    esac
-    subscription_tmp=$(mktemp "$dir/.subscription.XXXXXX")
-    subscription_config=$(printf '%s' "$subscription_url" | sed 's/[\\"]/\\&/g')
-    if printf 'url = "%s"\n' "$subscription_config" |
-        curl -q -fLs --proto '=http,https' --proto-redir '=http,https' --connect-timeout 5 --max-time 30 --config - -o "$subscription_tmp" &&
-        "$dir/routecraft-build" -check-subscription -subscription "$subscription_tmp"; then
-        subscription_path="$subscription_tmp"
+outbound_path=
+if [ -s "$url_file" ]; then
+    echo 'INFO: Downloading the subscription with the persistent HWID and checking the VPN nodes.'
+    probe="$dir/subscription/probe"
+    outbound_tmp=$(mktemp "$dir/.subscription.XXXXXX")
+    if ROUTECRAFT_PROBE_PROGRESS=1 sh "$dir/subscription-probe.sh" "$probe" <"$url_file" &&
+        jq -e --rawfile url "$url_file" '
+            select(.url == ($url | trim)) | .selected as $n | select($n > 0) |
+            .nodes[$n-1] | select(.status == "working") | .sing_box | objects
+        ' "$probe/current.json" >"$outbound_tmp"; then
+        outbound_path="$outbound_tmp"
     else
-        echo 'WARNING: VLESS subscription could not be loaded or has no supported nodes; previous data was retained.' >&2
-        rm -f "$subscription_tmp"
-        subscription_tmp=
+        echo 'WARNING: the subscription has no verified VPN outbound.' >&2
     fi
 fi
-if [ -z "$subscription_path" ]; then
+if [ -z "$outbound_path" ]; then
     if [ "$initial_optional" != 1 ]; then
-        echo 'ERROR: a valid VLESS subscription is required.' >&2
+        echo 'ERROR: a VPN subscription with a working node is required.' >&2
         exit 1
     fi
-    echo 'VLESS is unavailable. Continuing the first installation without a VLESS outbound.' >&2
+    echo 'VPN subscription unavailable. Continuing the first installation without a subscription outbound.' >&2
 fi
 geodata_host=raw.githubusercontent.com
 geodata_ip=
 fetch_geodata() {
     if [ -z "$geodata_ip" ]; then
+        echo 'INFO: Resolving the routing-data host through bootstrap DNS.'
         geodata_ip=$(nslookup -type=A "$geodata_host" "$dns_upstream" 2>/dev/null |
             awk '$1 == "Name:" { answer = 1 } answer && $1 == "Address:" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2; exit }')
         [ -n "$geodata_ip" ] || { echo 'ERROR: bootstrap DNS could not resolve the geodata source.' >&2; return 1; }
     fi
+    printf 'INFO: Downloading routing data %s.\n' "${1##*/}"
     curl -fsSL --resolve "$geodata_host:443:$geodata_ip" --connect-timeout 5 --max-time 30 "$1" -o "$2"
 }
 base="https://$geodata_host/MetaCubeX/meta-rules-dat/sing/geo"
@@ -96,7 +91,7 @@ if [ "$initial_optional" != 1 ] || [ -n "$exit_node" ]; then
     done
 fi
 extra="https://$geodata_host/runetfreedom/russia-v2ray-rules-dat/release/sing-box"
-if [ "$initial_optional" != 1 ] || [ -n "$subscription_path" ]; then
+if [ "$initial_optional" != 1 ] || [ -n "$outbound_path" ]; then
     for name in youtube telegram whatsapp; do
         fetch_geodata "$base/geosite/$name.srs" "$generation_tmp/geosite/$name.srs"
     done
@@ -107,10 +102,11 @@ fi
 
 set --
 if [ "$initial_optional" = 1 ]; then set -- -omit-unavailable-initial-vpn; fi
-if [ -n "$subscription_path" ]; then set -- "$@" -probe-vless; fi
-ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-build" "$@" -policy "$dir/policy.yaml" -subscription "$subscription_path" \
+echo 'INFO: Compiling the sing-box configuration.'
+ROUTECRAFT_TAILSCALE_STATE_DIR="$dir/tailscale-state" "$dir/routecraft-build" "$@" -policy "$dir/policy.yaml" -subscription "" -vpn-outbound "$outbound_path" \
     -headscale-key "$key_file" -data "$generation_tmp" -headscale "$control" -exit-node "$exit_node" \
     -dns "$dns_upstream" -output "$candidate_tmp"
+echo 'INFO: Validating the generated sing-box configuration.'
 sing-box check -c "$candidate_tmp"
 if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" != 1 ] &&
     { [ -f "$dir/dnsmasq-split.state" ] || [ -n "$(jsonfilter -i "$candidate_tmp" -e '@.inbounds[@.tag="routecraft-dns"].listen_port')" ]; }; then
@@ -120,9 +116,6 @@ fi
 mv -f "$candidate_tmp" "$output"
 # The validated configuration refers to this immutable generation by path.
 generation_tmp=
-if [ -n "$subscription_tmp" ]; then
-    mv -f "$subscription_tmp" "$dir/subscription.raw"
-fi
 if [ "${ROUTECRAFT_CONFIG_ONLY:-0}" = 1 ]; then
     echo "Candidate is ready at $output; active config and routes were not changed."
     exit 0

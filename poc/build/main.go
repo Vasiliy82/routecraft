@@ -35,6 +35,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 func main() {
 	settingsPath := flag.String("policy", "/tmp/routecraft/policy.yaml", "policy YAML")
 	subscriptionPath := flag.String("subscription", "/tmp/routecraft/subscription.raw", "downloaded subscription")
+	vpnOutboundPath := flag.String("vpn-outbound", "", "single VPN outbound verified by the subscription updater")
 	keyPath := flag.String("headscale-key", "/tmp/routecraft/headscale.key", "Tailscale or Headscale auth key")
 	dataDir := flag.String("data", "/tmp/routecraft", "rule-set and state directory")
 	control := flag.String("headscale", "https://controlplane.tailscale.com", "Tailscale or Headscale URL")
@@ -436,13 +437,33 @@ func main() {
 		fmt.Println("VLESS subscription contains supported nodes.")
 		return
 	}
-	if err := build(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial, *probeVLESS); err != nil {
+	var vpnOutbound map[string]any
+	if *vpnOutboundPath != "" {
+		raw, err := os.ReadFile(*vpnOutboundPath)
+		if err != nil || json.Unmarshal(raw, &vpnOutbound) != nil {
+			fmt.Fprintln(os.Stderr, "routecraft: cannot read verified VPN outbound")
+			os.Exit(1)
+		}
+		switch vpnOutbound["type"] {
+		case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic":
+		default:
+			fmt.Fprintln(os.Stderr, "routecraft: invalid verified VPN outbound type")
+			os.Exit(1)
+		}
+		vpnOutbound["tag"] = "vpn-sub"
+		*subscriptionPath = ""
+	}
+	if err := buildConfig(*settingsPath, *subscriptionPath, *keyPath, *dataDir, *control, *exitNode, *dnsUpstream, *output, *omitInitial, *probeVLESS, vpnOutbound); err != nil {
 		fmt.Fprintln(os.Stderr, "routecraft:", err)
 		os.Exit(1)
 	}
 }
 
 func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string, omitInitial, probeVLESS bool) error {
+	return buildConfig(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output, omitInitial, probeVLESS, nil)
+}
+
+func buildConfig(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, dnsUpstream, output string, omitInitial, probeVLESS bool, vpnOutbound map[string]any) error {
 	upstream, err := netip.ParseAddr(dnsUpstream)
 	if err != nil || upstream.IsLoopback() || upstream.IsUnspecified() || upstream.IsMulticast() || upstream.Zone() != "" {
 		return fmt.Errorf("DNS upstream must be a separate unicast DNS server IP")
@@ -503,10 +524,11 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 			return fmt.Errorf("Headscale key is empty")
 		}
 	}
-	if err := omitUnavailable(&p, len(nodes) > 0, len(key) > 0, omitInitial); err != nil {
+	hasVPN := vpnOutbound != nil || len(nodes) > 0
+	if err := omitUnavailable(&p, hasVPN, len(key) > 0, omitInitial); err != nil {
 		return err
 	}
-	if _, ok := p.DNS["vpn-sub"]; ok && len(nodes) == 0 {
+	if _, ok := p.DNS["vpn-sub"]; ok && !hasVPN {
 		return fmt.Errorf("DNS profile requires unavailable outbound vpn-sub")
 	}
 	if _, ok := p.DNS["tailscale-exit"]; ok && len(key) == 0 {
@@ -519,7 +541,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		p.DNS["direct"] = policy.DNSProfile{Type: "udp", Server: upstream.String()}
 	}
 	vpnDNS := policy.DNSProfile{Type: "https", Server: "1.1.1.1", ServerName: "cloudflare-dns.com"}
-	if _, ok := p.DNS["vpn-sub"]; !ok && len(nodes) > 0 {
+	if _, ok := p.DNS["vpn-sub"]; !ok && hasVPN {
 		p.DNS["vpn-sub"] = vpnDNS
 	}
 	if _, ok := p.DNS["tailscale-exit"]; !ok && len(key) > 0 {
@@ -554,7 +576,9 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		return err
 	}
 	compiled.Outbounds = append(compiled.Outbounds, nodes...)
-	if len(nodes) > 0 {
+	if vpnOutbound != nil {
+		compiled.Outbounds = append(compiled.Outbounds, vpnOutbound)
+	} else if len(nodes) > 0 {
 		compiled.Outbounds = append(compiled.Outbounds, map[string]any{
 			"type": "selector", "tag": "vpn-sub", "outbounds": tags, "default": selectedVLESS,
 		})
@@ -565,7 +589,7 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 		map[string]any{"type": "tproxy", "tag": "gateway", "listen": "0.0.0.0", "listen_port": 12345},
 		map[string]any{"type": "mixed", "tag": "test-direct", "listen": "127.0.0.1", "listen_port": 1080},
 	}
-	if len(nodes) > 0 {
+	if hasVPN {
 		rules = append(rules, map[string]any{"inbound": []string{"test-vless"}, "action": "route", "outbound": "vpn-sub"})
 		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": "test-vless", "listen": "127.0.0.1", "listen_port": 1081})
 	}
@@ -609,7 +633,11 @@ func build(settingsPath, subscriptionPath, keyPath, dataDir, control, exitNode, 
 	if err = os.WriteFile(output, append(encoded, '\n'), 0o600); err != nil {
 		return err
 	}
-	fmt.Printf("Generated PoC configuration with %d VLESS nodes and %d categories.\n", len(nodes), len(categories.Categories))
+	if vpnOutbound != nil {
+		fmt.Printf("Generated configuration with a verified %s VPN outbound and %d categories.\n", vpnOutbound["type"], len(categories.Categories))
+	} else {
+		fmt.Printf("Generated PoC configuration with %d VLESS nodes and %d categories.\n", len(nodes), len(categories.Categories))
+	}
 	return nil
 }
 

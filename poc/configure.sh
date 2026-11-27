@@ -4,6 +4,8 @@ set -eu
 
 dir=${ROUTECRAFT_DIR:-/etc/routecraft}
 secret_dir=${ROUTECRAFT_SECRET_DIR:-/root/routecraft-config}
+exec 3>&1
+printf '%s\n' 'INFO: Reading local network and Tailscale settings.'
 [ "$(id -u)" = 0 ] || { echo 'Run configure.sh as root.' >&2; exit 1; }
 [ -x "$dir/routecraft-build" ] || { echo 'Install the bundle first with install.sh --install.' >&2; exit 1; }
 
@@ -56,6 +58,14 @@ if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1
         fi
     fi
 fi
+if [ -s "$dir/sing-box.json" ]; then
+    active_exit=$(jq -r '[.endpoints[]? | select(.tag=="tailscale-exit" and .type=="tailscale") |
+        .exit_node | strings][0] // empty' "$dir/sing-box.json" 2>/dev/null || true)
+    if [ -n "$active_exit" ]; then
+        exit_default="$active_exit"
+        printf '%s\n' 'INFO: Using the active RouteCraft Exit Node as the default.'
+    fi
+fi
 
 ask() {
     label=$1
@@ -92,7 +102,7 @@ ask_secret() {
 }
 
 read_secret() {
-    secret_file="$secret_dir/$2"
+    secret_file=${3:-$secret_dir/$2}
     if [ ! -e "$secret_file" ] && [ ! -L "$secret_file" ]; then
         ask_secret "$1"
         return
@@ -107,6 +117,7 @@ read_secret() {
     case "$secret_value" in
         ''|*[[:space:]]*) echo "ERROR: expected one nonempty value in $secret_file." >&2; return 1 ;;
     esac
+    printf 'INFO: Using %s from %s.\n' "$1" "$secret_file" >&3
     printf '%s' "$secret_value"
 }
 
@@ -236,8 +247,19 @@ else
     headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
     exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
 fi
-subscription=$(read_secret 'VLESS subscription URL (optional on first install)' vless-subscription-url)
-if [ "$first_install" != 1 ]; then auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key); fi
+subscription_file=
+if [ "$first_install" != 1 ] && [ -z "${ROUTECRAFT_SECRET_DIR:-}" ]; then
+    if [ -s "$dir/subscription/url" ]; then subscription_file="$dir/subscription/url"
+    elif [ -s "$dir/subscription.url" ]; then subscription_file="$dir/subscription.url"; fi
+fi
+subscription=$(read_secret 'VPN subscription URL (optional on first install)' vless-subscription-url "$subscription_file") || exit 1
+if [ "$first_install" != 1 ]; then
+    auth_file=
+    if [ -z "${ROUTECRAFT_SECRET_DIR:-}" ] &&
+        [ ! -e "$secret_dir/tailscale-pre-auth-key" ] && [ ! -L "$secret_dir/tailscale-pre-auth-key" ] &&
+        [ -s "$dir/headscale.key" ]; then auth_file="$dir/headscale.key"; fi
+    auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key "$auth_file") || exit 1
+fi
 
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac
 case "$lan_subnet" in *[!0-9./]*|*/*/*|'') echo 'Invalid LAN subnet.' >&2; exit 1;; esac
@@ -254,6 +276,12 @@ case "$subscription" in
 esac
 if [ "$first_install" != 1 ] && [ -z "$exit_node" ]; then echo 'Invalid Exit Node.' >&2; exit 1; fi
 ip link show dev "$lan_if" >/dev/null
+
+if [ -n "$subscription" ] && [ ! -s "$dir/subscription/probe/hwid" ] &&
+    { [ -e "$secret_dir/subscription-hwid" ] || [ -L "$secret_dir/subscription-hwid" ]; }; then
+    hwid=$(read_secret 'subscription HWID' subscription-hwid) || exit 1
+    sh "$dir/subscription.sh" set hwid "$hwid"
+fi
 
 mkdir -p "$dir"
 umask 077
@@ -277,6 +305,7 @@ printf '%s\n' "$subscription" >"$dir/subscription.candidate.url"
 printf '%s\n' "$auth_key" >"$dir/headscale.candidate.key"
 chmod 600 "$dir/site.candidate.env" "$dir/subscription.candidate.url" "$dir/headscale.candidate.key"
 
+printf '%s\n' 'INFO: Preparing a candidate configuration for the selected interfaces and VPNs.'
 ROUTECRAFT_DIR="$dir" ROUTECRAFT_SITE_ENV="$dir/site.candidate.env" \
     ROUTECRAFT_SUBSCRIPTION_FILE="$dir/subscription.candidate.url" ROUTECRAFT_HEADSCALE_KEY_FILE="$dir/headscale.candidate.key" \
     ROUTECRAFT_CONFIG_ONLY=1 ROUTECRAFT_INITIAL_OPTIONAL_VPN="$initial_optional" ROUTECRAFT_LOCK_OWNER="$$" sh "$dir/start.sh"

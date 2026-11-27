@@ -31,6 +31,10 @@ if sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"; then echo 'expected lock fa
 grep -q 'another RouteCraft update' "$tmp/err"
 [ -d "$tmp/site/.update.lock" ]
 rmdir "$tmp/site/.update.lock"
+cat >"$tmp/site/subscription-probe.sh" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
 printf '%s\n' 'https://example.invalid/private-token' >"$tmp/site/subscription.url"
 sh "$repo/poc/start.sh" >"$tmp/out" 2>"$tmp/err"
 [ "$(cat "$tmp/site/subscription.raw")" = 'old secret data' ]

@@ -64,6 +64,10 @@ printf '%s' "$ROUTECRAFT_INITIAL_OPTIONAL_VPN" >"$ROUTECRAFT_DIR/initial-mode"
 printf '%s\n' candidate >"$ROUTECRAFT_DIR/sing-box.candidate.json"
 exit 0
 EOF
+cat >"$tmp/site/install.sh" <<'EOF'
+#!/bin/sh
+[ "$1" = --activate ]
+EOF
 chmod +x "$tmp/bin/"* "$tmp/site/routecraft-build"
 PATH="$tmp/bin:$PATH"; export PATH
 ROUTECRAFT_DIR="$tmp/site"; export ROUTECRAFT_DIR
@@ -183,6 +187,8 @@ grep -qx 'ROUTECRAFT_WAN_INTERFACE=alternate' "$tmp/site/site.candidate.env"
 grep -qx 'ROUTECRAFT_LAN_INTERFACE=lan-test' "$tmp/site/site.candidate.env"
 grep -qx 'https://example.invalid/file-token' "$tmp/site/subscription.candidate.url"
 grep -qx 'file-test-key' "$tmp/site/headscale.candidate.key"
+grep -Fq "$ROUTECRAFT_SECRET_DIR/vless-subscription-url" "$tmp/out"
+grep -Fq "$ROUTECRAFT_SECRET_DIR/tailscale-pre-auth-key" "$tmp/out"
 if grep -Eq 'file-token|file-test-key' "$tmp/out" "$tmp/err"; then
     echo 'file-provided secret was printed' >&2
     exit 1
@@ -193,4 +199,9 @@ if printf '%s\n' n '' '' '' '' '' exit.example n | sh "$repo/poc/configure.sh" >
     exit 1
 fi
 grep -Fq 'expected one nonempty value' "$tmp/err"
+printf 'file-test-key\n' >"$ROUTECRAFT_SECRET_DIR/tailscale-pre-auth-key"
+printf '%s\n' '{"endpoints":[{"type":"tailscale","tag":"tailscale-exit","exit_node":"100.64.0.44"}]}' >"$tmp/site/sing-box.json"
+printf '%s\n' n '' '' '' '' '' '' n | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
+grep -Fq 'Tailscale Exit Node name or IP [100.64.0.44]' "$tmp/err"
+grep -qx 'ROUTECRAFT_EXIT_NODE=100.64.0.44' "$tmp/site/site.candidate.env"
 echo 'configure-defaults: passed'

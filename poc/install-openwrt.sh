@@ -15,6 +15,7 @@ esac
 download() {
     url=$1
     destination=$2
+    printf 'INFO: Downloading %s.\n' "${destination##*/}"
     if command -v uclient-fetch >/dev/null 2>&1; then
         if uclient-fetch -4 -O "$destination" "$url" && [ -s "$destination" ]; then
             return 0
@@ -46,10 +47,12 @@ archive="routecraft-openwrt-$bundle_arch.tar.gz"
 bundle_base="https://raw.githubusercontent.com/$repository/$ref/poc/bundles"
 download "$bundle_base/$archive" "$temporary/$archive"
 download "$bundle_base/$archive.sha256" "$temporary/$archive.sha256"
+echo 'INFO: Verifying the bundle checksum and unpacking the files.'
 (cd "$temporary" && sha256sum -c "$archive.sha256")
 tar -xzf "$temporary/$archive" -C "$temporary"
 chmod 700 "$temporary/bin/routecraft-build"
 
 echo "Installing RouteCraft PoC for $system_arch. The helper will install missing OpenWrt packages."
 sh "$temporary/install.sh" --install
+echo 'INFO: Starting the configuration wizard.'
 sh /etc/routecraft/configure.sh
