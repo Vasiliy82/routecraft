@@ -72,6 +72,7 @@ case "$1" in
             .route.rules[0].domain == ["api.ipify.org"] and .route.rules[1].outbound == "candidate"
         ' "$3" >/dev/null
         jq -r '.outbounds[0].server' "$3" >"$POCTEST/current-server"
+        if grep -qx first.example "$POCTEST/current-server"; then sleep 2; fi
         echo 'tcp server started at 127.0.0.1:12345'
         exit ;;
     *) exit 1 ;;

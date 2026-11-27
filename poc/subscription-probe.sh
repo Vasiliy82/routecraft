@@ -442,16 +442,18 @@ probe_https() {
     probe_pid=$!
     exec 7<"$work/proxy-ready"
     port=
-    # Port 0 lets the kernel assign a free port, even during parallel checks.
-    while IFS= read -r -t 1 line <&7; do
+    # Port 0 lets the kernel assign a free port. Process startup on OpenWrt
+    # can take longer than the separate one-second network request budget.
+    while IFS= read -r -t 4 line <&7; do
         case "$line" in
             *'tcp server started at 127.0.0.1:'*)
                 port=${line##*127.0.0.1:}
                 case "$port" in ''|*[!0-9]*) port= ;; *) break ;; esac ;;
         esac
     done
-    status=probe_failed
+    status=probe_start_failed
     if [ -n "$port" ]; then
+        status=probe_failed
         if curl -q --noproxy '' --proxy "socks5h://127.0.0.1:$port" \
             --fail --silent --max-time "$probe_timeout" --max-filesize 1024 \
             'https://api.ipify.org?format=json' >"$work/probe-output" 2>/dev/null; then
