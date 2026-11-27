@@ -4,6 +4,11 @@ set -eu
 
 bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mode=${1:---check}
+external_snapshot=${ROUTECRAFT_EXTERNAL_SNAPSHOT:-0}
+case "$external_snapshot" in
+    0|1) ;;
+    *) echo 'ERROR: ROUTECRAFT_EXTERNAL_SNAPSHOT must be 0 or 1.' >&2; exit 2 ;;
+esac
 target_arch=$(cat "$bundle_dir/TARGET_ARCH" 2>/dev/null || true)
 builder="$bundle_dir/bin/routecraft-build"
 [ -f "$builder" ] || builder="$bundle_dir/routecraft-build"
@@ -206,7 +211,7 @@ case "$mode" in
             [ -s "$bundle_dir/$file" ] || { echo "ERROR: bundled $file is missing." >&2; exit 1; }
         done
         destination=/etc/routecraft
-        if [ -d "$destination" ]; then
+        if [ -d "$destination" ] && [ "$external_snapshot" -eq 0 ]; then
             backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
             mkdir -p "$backup"
             cp -a "$destination" "$backup/"
@@ -247,6 +252,9 @@ case "$mode" in
         else
             echo 'ERROR: configure.sh has not produced a validated candidate.'
             exit 1
+        fi
+        if [ "$external_snapshot" -eq 1 ]; then
+            echo 'Activation recovery uses the existing external snapshot.'
         fi
         while true; do
             printf 'Activate it now? (y/n): '
@@ -299,21 +307,27 @@ case "$mode" in
             echo 'ERROR: configure IPv4 forwarding and LAN-to-WAN firewall/NAT before activating a separate WAN/LAN setup.' >&2
             exit 1
         fi
-        backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
-        mkdir -p "$backup"
+        backup=
+        if [ "$external_snapshot" -eq 0 ]; then
+            backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$backup"
+        fi
+        save_recovery_file() {
+            if [ -n "$backup" ]; then cp -p "$1" "$backup/$2"; fi
+        }
         had_config=0
         had_service=0
         had_site=0
         [ ! -s "$active" ] || had_config=1
         [ ! -f /etc/init.d/routecraft ] || had_service=1
         [ ! -f "$destination/site.env" ] || had_site=1
-        [ ! -s "$active" ] || cp -p "$active" "$backup/sing-box.json"
-        [ ! -f /etc/init.d/routecraft ] || cp -p /etc/init.d/routecraft "$backup/routecraft.init"
-        [ ! -f "$destination/site.env" ] || cp -p "$destination/site.env" "$backup/site.env"
+        [ ! -s "$active" ] || save_recovery_file "$active" sing-box.json
+        [ ! -f /etc/init.d/routecraft ] || save_recovery_file /etc/init.d/routecraft routecraft.init
+        [ ! -f "$destination/site.env" ] || save_recovery_file "$destination/site.env" site.env
         had_subscription=0
         had_key=0
-        [ ! -f "$destination/subscription.url" ] || { had_subscription=1; cp -p "$destination/subscription.url" "$backup/subscription.url"; }
-        [ ! -f "$destination/headscale.key" ] || { had_key=1; cp -p "$destination/headscale.key" "$backup/headscale.key"; }
+        [ ! -f "$destination/subscription.url" ] || { had_subscription=1; save_recovery_file "$destination/subscription.url" subscription.url; }
+        [ ! -f "$destination/headscale.key" ] || { had_key=1; save_recovery_file "$destination/headscale.key" headscale.key; }
         rebind_requested=0
         rebind_changed=0
         split_state="$destination/dnsmasq-split.state"
@@ -333,19 +347,23 @@ case "$mode" in
         if [ "$split_mode" = on ] || [ -f "$split_state" ]; then
             [ -r "$destination/dnsmasq-split.sh" ] || { echo 'ERROR: missing Split DNS activation helper.' >&2; exit 1; }
             split_apply=1
-            [ ! -f "$split_state" ] || cp -p "$split_state" "$backup/dnsmasq-split.state"
+            [ ! -f "$split_state" ] || save_recovery_file "$split_state" dnsmasq-split.state
         fi
         if [ -f "$destination/site.candidate.env" ] && grep -qx 'ROUTECRAFT_DISABLE_REBIND=1' "$destination/site.candidate.env" &&
             [ "$(uci -q get 'dhcp.@dnsmasq[0].rebind_protection' 2>/dev/null || true)" != 0 ]; then
             rebind_requested=1
         fi
         if [ "$rebind_requested" -eq 1 ] || [ "$split_apply" -eq 1 ]; then
-            [ -f /etc/config/dhcp ] || { echo 'ERROR: cannot back up the DHCP configuration.' >&2; exit 1; }
+            [ -f /etc/config/dhcp ] || { echo 'ERROR: DHCP configuration is missing.' >&2; exit 1; }
             pending_dhcp=$(uci -q changes dhcp) || { echo 'ERROR: cannot inspect pending DHCP changes.' >&2; exit 1; }
             [ -z "$pending_dhcp" ] || { echo 'ERROR: DHCP has uncommitted UCI changes; resolve them before activation.' >&2; exit 1; }
-            cp -p /etc/config/dhcp "$backup/dhcp"
+            save_recovery_file /etc/config/dhcp dhcp
         fi
         rollback_activation() {
+            if [ -z "$backup" ]; then
+                echo 'ERROR: activation did not complete. Recover using the external snapshot.' >&2
+                return
+            fi
             echo 'ERROR: activation did not complete; restoring the previous configuration.' >&2
             /etc/init.d/routecraft stop >/dev/null 2>&1 || true
             if [ "$rebind_changed" -eq 1 ] || [ "$split_changed" -eq 1 ]; then
@@ -396,7 +414,7 @@ case "$mode" in
         if [ "$rebind_requested" -eq 1 ]; then
             rebind_changed=1
             if ! uci set 'dhcp.@dnsmasq[0].rebind_protection=0' || ! uci commit dhcp || ! /etc/init.d/dnsmasq restart; then
-                echo 'ERROR: updating dnsmasq failed; restoring previous configuration.' >&2
+                echo 'ERROR: updating dnsmasq failed.' >&2
                 rebind_ok=0
             fi
         fi
@@ -445,7 +463,11 @@ case "$mode" in
         [ "$service_ok" -eq 1 ] || exit 1
         /etc/init.d/routecraft status
         apply_pending=0
-        echo "RouteCraft activated. Recovery copy: $backup"
+        if [ -n "$backup" ]; then
+            echo "RouteCraft activated. Recovery copy: $backup"
+        else
+            echo 'RouteCraft activated. Recovery uses the external snapshot.'
+        fi
         ;;
     *)
         echo 'Usage: sh install.sh [--check|--install|--activate]' >&2
