@@ -18,6 +18,7 @@ EOF
 }
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
+progress() { if [ -t 2 ]; then printf '%s\n' "$1" >&2; fi; }
 
 state=/etc/routecraft/subscription-poc
 mode=refresh
@@ -133,8 +134,17 @@ mkdir -p "$state" || die 'Cannot create state directory.'
 exec 9>"$state/lock"
 flock -n 9 || die 'Another subscription update is running.'
 work=$(mktemp -d /tmp/routecraft-subscription.XXXXXX) || die 'Cannot create private workspace.'
-staged= child= timer=
+staged= child= timer= probe_pid=
+stop_probe() {
+    if [ -n "$probe_pid" ]; then
+        kill -KILL "$probe_pid" 2>/dev/null || :
+        wait "$probe_pid" 2>/dev/null || :
+        probe_pid=
+        exec 7<&-
+    fi
+}
 cleanup() {
+    stop_probe
     [ -z "$timer" ] || kill "$timer" 2>/dev/null || :
     [ -z "$child" ] || kill -KILL "$child" 2>/dev/null || :
     [ -z "$staged" ] || rm -f "$staged"
@@ -186,6 +196,7 @@ save_attempt() {
 
 fail_attempt() { save_attempt "$1"; die "$1"; }
 
+progress 'Downloading the VPN subscription…'
 os_version=$(sed -n 's/^VERSION_ID=//p' /etc/os-release 2>/dev/null | tr -d '"\r' | head -n 1)
 hop_url="$url"
 send_hwid=yes
@@ -366,7 +377,12 @@ parse_subscription() {
             else .sing_box = ($parsed.cfg | checked) | .status = "pending" end;
         def parse_uri:
             . as $uri | ($uri | split("://")[0] | protocol) as $proto |
-            {uri:$uri,protocol:$proto} as $node |
+            ($uri | split_once("#")[1] // "" | try unescape catch "") as $label |
+            (if $proto == "vmess" then
+                (try ($uri | split_once("://")[1] | split_once("#")[0] |
+                    split_once("?")[0] | unescape | b64 | fromjson | .ps | strings) // $label)
+             else $label end) as $name |
+            {uri:$uri,protocol:$proto,name:$name} as $node |
             if $proto == "unknown" then $node + {status:"unsupported"}
             else try result($node; uri_parts($proto)) catch
                 ($node + {status:(if IN("unsupported","placeholder") then . else "invalid" end)}) end
@@ -467,6 +483,12 @@ case "$http_status" in
     *) fail_attempt "Subscription HTTP status $http_status." ;;
 esac
 [ -z "$parse_error" ] || fail_attempt "$parse_error"
+total=$(jq -r 'length' "$work/nodes")
+if [ "$require_egress" -eq 1 ]; then
+    progress "Received $total nodes. Checking compatibility and HTTPS with DNS through each VPN."
+else
+    progress "Received $total nodes. Checking compatibility and DNS-over-HTTPS."
+fi
 
 bounded() {
     rm -f "$work/timed-out"
@@ -510,36 +532,91 @@ egress_ip() {
     ' "$work/probe-output" 2>/dev/null
 }
 
+probe_https() {
+    sing-box run -c "$work/probe.json" </dev/null >"$work/proxy-ready" 2>&1 &
+    probe_pid=$!
+    exec 7<"$work/proxy-ready"
+    port=
+    # Port 0 lets the kernel assign a free port, even during parallel checks.
+    while IFS= read -r -t 1 line <&7; do
+        case "$line" in
+            *'tcp server started at 127.0.0.1:'*)
+                port=${line##*127.0.0.1:}
+                case "$port" in ''|*[!0-9]*) port= ;; *) break ;; esac ;;
+        esac
+    done
+    status=probe_failed
+    if [ -n "$port" ]; then
+        if curl -q --noproxy '' --proxy "socks5h://127.0.0.1:$port" \
+            --fail --silent --max-time "$probe_timeout" --max-filesize 1024 \
+            'https://api.ipify.org?format=json' >"$work/probe-output" 2>/dev/null; then
+            if public_ip=$(egress_ip); then status=working; fi
+        else
+            if [ "$?" -eq 28 ]; then status=probe_timeout; fi
+        fi
+    fi
+    stop_probe
+}
+
 jq -c '.[]' "$work/nodes" > "$work/queue"
 : > "$work/checked"
+if [ "$require_egress" -eq 1 ]; then mkfifo "$work/proxy-ready"; fi
 index=0 selected=0
 while IFS= read -r row; do
     index=$((index + 1))
     status=$(printf '%s\n' "$row" | jq -r '.status')
     public_ip=
+    if [ -t 2 ]; then
+        heading=$(printf '%s\n' "$row" | jq -r '
+            def shown_name:
+                (.name // "" | strings | explode |
+                    map(select(. >= 32 and (. < 127 or . >= 160) and . != 1564 and
+                        (. < 8206 or . > 8207) and (. < 8232 or . > 8238) and
+                        (. < 8294 or . > 8297))) | implode | trim) as $name |
+                if ($name | length) > 240 or ($name | contains("://") or contains("@")) or
+                    any(range(0; ($name | length)-35); . as $offset |
+                        ($name[$offset:$offset+36] | split("-") | map(length)) == [8,4,4,4,12])
+                then "" else $name[:80] end;
+            .protocol + (shown_name | if . == "" then "" else " — " + . end)
+        ')
+        if [ "$status" = pending ]; then progress "[$index/$total] $heading"; fi
+    fi
     if [ "$status" = pending ]; then
-        printf '%s\n' "$row" | jq '
+        printf '%s\n' "$row" | jq --argjson https "$require_egress" '
             {log:{disabled:true},dns:{servers:[{type:"local",tag:"local-dns"}]},
-             outbounds:[.sing_box],route:{final:"candidate",default_domain_resolver:"local-dns"}}
+             outbounds:[.sing_box],route:{final:"candidate",default_domain_resolver:"local-dns"}} |
+            if $https == 1 then
+                .log = {level:"info"} |
+                .inbounds = [{type:"mixed",tag:"probe",listen:"127.0.0.1",listen_port:0}] |
+                .dns.servers += [{type:"https",tag:"probe-dns",server:"1.1.1.1",detour:"candidate"}] |
+                .route.rules = [
+                    {domain:["api.ipify.org"],action:"resolve",server:"probe-dns",strategy:"ipv4_only",disable_cache:true},
+                    {domain:["api.ipify.org"],action:"route",outbound:"candidate"},
+                    {action:"reject"}
+                ]
+            else . end
         ' > "$work/probe.json"
         if bounded sing-box check -c "$work/probe.json"; then
-            if bounded sing-box tools fetch -c "$work/probe.json" -o candidate \
+            if [ "$require_egress" -eq 1 ]; then
+                probe_https
+            elif bounded sing-box tools fetch -c "$work/probe.json" -o candidate \
                 'https://1.1.1.1/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'; then
                 if valid_dns; then status=working; else status=probe_failed; fi
             else
                 case "$?" in 124) status=probe_timeout ;; *) status=probe_failed ;; esac
             fi
-            if [ "$require_egress" -eq 1 ]; then
-                if ! { bounded sing-box tools fetch -c "$work/probe.json" -o candidate \
-                    'https://api.ipify.org?format=json' && public_ip=$(egress_ip); }; then
-                    if [ "$status" = working ]; then status=egress_failed; fi
-                fi
-            fi
         else
             case "$?" in 124) status=check_timeout ;; *) status=sing_box_rejected ;; esac
         fi
     fi
-    if [ "$status" = working ] && [ "$selected" -eq 0 ]; then selected="$index"; fi
+    marker=
+    if [ "$status" = working ] && [ "$selected" -eq 0 ]; then
+        selected="$index"
+        marker=' (first working)'
+    fi
+    if [ -t 2 ]; then
+        progress "[$index/$total] $heading: $status${public_ip:+ ip=$public_ip}$marker"
+    fi
     printf '%s\n' "$row" | jq -c --arg status "$status" --arg ip "$public_ip" \
         '.status = $status | if $ip == "" then . else .egress_ip = $ip end' >> "$work/checked"
 done < "$work/queue"
@@ -550,9 +627,9 @@ printf '%s' "$agent" > "$work/user-agent"
 jq -n --argjson selected "$selected" --rawfile url "$work/url" --rawfile user_agent "$work/user-agent" \
     --slurpfile nodes "$work/nodes" --slurpfile metadata "$work/metadata" \
     '{url:$url,user_agent:$user_agent,selected:$selected,nodes:$nodes[0],metadata:$metadata[0]}' > "$work/current"
-show_nodes "$work/current"
+if [ ! -t 1 ] || [ ! -t 2 ]; then show_nodes "$work/current"; fi
 if [ "$selected" -eq 0 ]; then
-    if [ "$require_egress" -eq 1 ]; then fail_attempt 'No connection passed both VPN traffic probes.'; fi
+    if [ "$require_egress" -eq 1 ]; then fail_attempt 'No connection completed the VPN HTTPS probe.'; fi
     fail_attempt 'No connection passed the sing-box DNS-over-HTTPS probe.'
 fi
 save_attempt ''

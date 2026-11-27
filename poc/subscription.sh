@@ -13,6 +13,7 @@ EOF
 }
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
+progress() { if [ -t 2 ]; then printf '%s\n' "$1" >&2; fi; }
 
 dir=${ROUTECRAFT_DIR:-/etc/routecraft}
 service=${ROUTECRAFT_SERVICE:-/etc/init.d/routecraft}
@@ -140,9 +141,13 @@ case "$1" in
 esac
 
 [ -s "$state/url" ] || die 'Set the subscription URL first.'
-sh "$engine" --state-dir "$probe" --require-egress-ip --url-stdin <"$state/url"
-[ "$1" = update ] || exit 0
+sh "$engine" --state-dir "$probe" --probe-timeout 1 --require-egress-ip --url-stdin <"$state/url"
+if [ "$1" = check ]; then
+    progress 'Check complete. Use update to apply the selected node.'
+    exit 0
+fi
 
+progress 'Comparing the selected node with the active sing-box configuration…'
 mkdir "$lock" 2>/dev/null || die 'Another RouteCraft update is running, or its lock needs inspection.'
 owns_lock=1
 printf '%s\n' "$$" >"$lock/owner"
@@ -152,7 +157,7 @@ work=$(mktemp -d "$dir/.subscription-apply.XXXXXX")
 
 jq -e '.selected as $n | select($n > 0) |
     .nodes[$n-1] | select(.status == "working" and (.sing_box | type) == "object") |
-    {protocol,uri,egress_ip,sing_box}
+    {protocol,name,uri,egress_ip,sing_box}
 ' "$probe/current.json" >"$work/selected.json" 2>/dev/null || die 'Invalid selected subscription node.'
 
 jq -e '
@@ -177,7 +182,7 @@ jq -e --slurpfile selected "$work/selected.json" --slurpfile existing "$work/out
 ' "$active" >"$work/candidate.json" 2>/dev/null || die 'Cannot replace the subscription outbound safely.'
 
 if jq -es 'length == 2 and .[0] == .[1]' "$active" "$work/candidate.json" >/dev/null 2>&1; then
-    if ! jq -es 'length == 2 and .[0].sing_box == .[1].sing_box' \
+    if ! jq -es 'length == 2 and .[0].sing_box == .[1].sing_box and .[0].name == .[1].name' \
         "$state/selected.json" "$work/selected.json" >/dev/null 2>&1; then
         save "$work/selected.json" "$state/selected.json"
     fi
@@ -192,12 +197,15 @@ port=$(jq -er '
     select(length == 1) | .[0] | select(type == "number" and . >= 1 and . <= 65535 and . == floor)
 ' "$active" 2>/dev/null) || die 'The active configuration has no RouteCraft loopback VPN test listener.'
 "$service" status 8>&- >/dev/null 2>&1 || die 'RouteCraft service is stopped.'
+progress 'Validating the replacement sing-box configuration…'
 sing-box check -c "$work/candidate.json" >"$work/check.log" 2>&1 || die 'sing-box rejected the replacement configuration.'
 cp -p "$active" "$work/previous.json"
 if [ -f "$state/selected.json" ]; then cp -p "$state/selected.json" "$work/previous-selected.json"; fi
 rollback=1
 mv -f "$work/candidate.json" "$active"
+progress 'Restarting RouteCraft with the new VPN outbound…'
 "$service" restart 8>&- >"$work/restart.log" 2>&1 || die 'RouteCraft restart failed.'
+progress 'Checking HTTPS through the restarted service…'
 verify_egress || die 'Live HTTPS probe through the restarted VPN outbound failed.'
 save "$work/selected.json" "$state/selected.json"
 rollback=0

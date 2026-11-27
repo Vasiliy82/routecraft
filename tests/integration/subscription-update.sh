@@ -19,7 +19,8 @@ if [ "$1" = --validate-url ]; then
     [ "$(cat)" = 'https://subscription.example/test' ]
     exit
 fi
-[ "$1" = --state-dir ] && [ "$3" = --require-egress-ip ] && [ "$4" = --url-stdin ]
+[ "$1" = --state-dir ] && [ "$3" = --probe-timeout ] && [ "$4" = 1 ] &&
+    [ "$5" = --require-egress-ip ] && [ "$6" = --url-stdin ]
 [ "$(cat)" = 'https://subscription.example/test' ]
 [ ! -f "$UPDATE_FIXTURE/probe-fails" ] || exit 1
 cp "$UPDATE_FIXTURE/chosen.json" "$2/current.json"
@@ -58,7 +59,7 @@ cat >"$cfg" <<'EOF'
 }
 EOF
 cat >"$work/chosen.json" <<'EOF'
-{"selected":1,"nodes":[{"status":"working","protocol":"hysteria2","uri":"fixture","egress_ip":"192.0.2.9",
+{"selected":1,"nodes":[{"status":"working","protocol":"hysteria2","name":"Нидерланды","uri":"fixture","egress_ip":"192.0.2.9",
  "sing_box":{"type":"hysteria2","tag":"candidate","server":"chosen.example","server_port":443,"password":"fixture","tls":{"enabled":true}}}]}
 EOF
 run() { sh "$work/subscription.sh" "$@"; }
@@ -76,12 +77,21 @@ jq -es '.[0].route==.[1].route and .[0].dns==.[1].dns and .[0].endpoints==.[1].e
     (.[1].outbounds|map(.tag)) == ["direct","vpn-sub"] and
     .[1].outbounds[1].domain_resolver == "bootstrap"' "$work/initial" "$cfg" >/dev/null
 run get selected >"$work/applied"
+jq -e '.name == "Нидерланды"' "$work/applied" >/dev/null
 cmp "$work/applied" "$ROUTECRAFT_DIR/subscription/selected.json"
 cp "$cfg" "$work/working"
 run update >"$work/stdout"
 grep -qx 'VPN outbound unchanged. Restart not needed.' "$work/stdout"
 cmp "$cfg" "$work/working"
 test "$(wc -l <"$work/restarts")" -eq 1
+jq '.nodes[0].name = "Германия"' "$work/chosen.json" >"$work/new.json"
+mv "$work/new.json" "$work/chosen.json"
+run update >"$work/stdout"
+grep -qx 'VPN outbound unchanged. Restart not needed.' "$work/stdout"
+cmp "$cfg" "$work/working"
+test "$(wc -l <"$work/restarts")" -eq 1
+run get selected >"$work/applied"
+jq -e '.name == "Германия"' "$work/applied" >/dev/null
 
 jq '.nodes[0].sing_box.server="changed.example"' "$work/chosen.json" >"$work/new.json"
 mv "$work/new.json" "$work/chosen.json"
