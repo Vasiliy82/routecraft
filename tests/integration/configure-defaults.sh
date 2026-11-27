@@ -139,7 +139,7 @@ grep -qx 'ROUTECRAFT_EXIT_NODE=' "$tmp/site/site.candidate.env"
 [ "$(cat "$tmp/site/headscale.candidate.key")" = '' ]
 mv "$tmp/bin/tailscale" "$tmp/tailscale-stub"
 old_path=$PATH
-PATH="$tmp/bin:/usr/bin"; export PATH
+PATH="$tmp/bin:/usr/bin:/bin"; export PATH
 MOCK_NODES=0; export MOCK_NODES
 printf 'n\n\n\n\n\nn\n\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
 grep -q 'Tailscale is not installed' "$tmp/err"

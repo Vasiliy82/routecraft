@@ -21,6 +21,11 @@ dns_default=${dns_default:-$(ip -4 route show default 2>/dev/null | awk 'NR==1 {
 # registers its own Tailscale device with the supplied pre-auth key.
 control_default=https://controlplane.tailscale.com
 exit_default=
+active_exit=
+if [ -s "$dir/sing-box.json" ]; then
+    active_exit=$(jq -r '[.endpoints[]? | select(.tag=="tailscale-exit" and .type=="tailscale") |
+        .exit_node | strings][0] // empty' "$dir/sing-box.json" 2>/dev/null || true)
+fi
 ts_status=
 ts_state=
 if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
@@ -52,19 +57,15 @@ if command -v tailscale >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1
                     exit_default=$address
                     break
                 done
-            elif [ "${ts_count:-0}" -gt 1 ]; then
+            elif [ "${ts_count:-0}" -gt 1 ] && [ -z "$active_exit" ]; then
                 echo 'Multiple Tailscale Exit Nodes are available; choose one using tailscale status.' >&2
             fi
         fi
     fi
 fi
-if [ -s "$dir/sing-box.json" ]; then
-    active_exit=$(jq -r '[.endpoints[]? | select(.tag=="tailscale-exit" and .type=="tailscale") |
-        .exit_node | strings][0] // empty' "$dir/sing-box.json" 2>/dev/null || true)
-    if [ -n "$active_exit" ]; then
-        exit_default="$active_exit"
-        printf '%s\n' 'INFO: Using the active RouteCraft Exit Node as the default.'
-    fi
+if [ -n "$active_exit" ]; then
+    exit_default="$active_exit"
+    printf '%s\n' 'INFO: Using the active RouteCraft Exit Node as the default.'
 fi
 
 ask() {
