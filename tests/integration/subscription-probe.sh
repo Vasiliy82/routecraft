@@ -3,7 +3,7 @@ set -eu
 umask 077
 
 # Run on OpenWrt where the standalone PoC's dependencies are installed.
-script=${1:-poc/subscription-poc.sh}
+script=${1:-poc/subscription-probe.sh}
 work=$(mktemp -d /tmp/routecraft-subscription-test.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin"
@@ -74,11 +74,6 @@ case "$1" in
         jq -r '.outbounds[0].server' "$3" >"$POCTEST/current-server"
         echo 'tcp server started at 127.0.0.1:12345'
         exit ;;
-    tools)
-        [ "$5" = -o ] && [ "$6" = candidate ]
-        server=$(jq -r '.outbounds[0].server' "$4")
-        [ "$server" != unreachable.example ] || exit 1
-        printf '\000\000\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\042\000\004\300\000\002\001' ;;
     *) exit 1 ;;
 esac
 BOX
@@ -103,7 +98,8 @@ tuic://$id:pass@tuic.example:443?congestion_control=bbr
 vmess://$vmess
 EOF
 
-sh "$script" --state-dir "$work/state" --probe-timeout 1 --require-egress-ip https://origin.example/sub > "$work/run" 2> "$work/progress"
+probe() { printf '%s\n' https://origin.example/sub | sh "$script" "$work/state"; }
+probe > "$work/run" 2> "$work/progress"
 test ! -s "$work/progress"
 grep -qx 'selected=3 (private result: current.json)' "$work/run"
 grep -qx '3 vless working ip=192.0.2.1 (first working)' "$work/run"
@@ -121,7 +117,7 @@ jq -e '
 jq -e '.headers | contains("private-fixture-marker")' "$work/state/last-attempt.json" >/dev/null
 cp "$work/state/current.json" "$work/kept"
 : > "$work/deny"
-if sh "$script" --state-dir "$work/state" > "$work/error" 2>&1; then
+if probe > "$work/error" 2>&1; then
     printf '%s\n' 'Expected the refresh to fail.' >&2
     exit 1
 fi
@@ -141,10 +137,10 @@ cat > "$work/fixture" <<EOF
     "streamSettings":{"network":"xhttp","xhttpSettings":{"extra":{"anything":true}}}}]}
 ]
 EOF
-sh "$script" --state-dir "$work/state" > "$work/run"
+probe > "$work/run"
 jq -e '
     .selected == 1 and (.nodes | map(.status)) == ["working","unsupported","unsupported"] and
     .nodes[0].sing_box.tls == {enabled:true} and .nodes[0].sing_box.detour == null and
     .nodes[2].raw.streamSettings.xhttpSettings.extra.anything == true
 ' "$work/state/current.json" >/dev/null
-printf '%s\n' 'subscription-poc: URI and JSON formats, selection, redaction, redirects, HWID, metadata and rollback passed'
+printf '%s\n' 'subscription-probe: URI and JSON formats, selection, redaction, redirects, HWID, metadata and rollback passed'

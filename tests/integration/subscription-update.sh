@@ -12,18 +12,17 @@ export PATH="$work/bin:$PATH"
 mkdir "$ROUTECRAFT_DIR" "$work/bin"
 cp "$script" "$work/subscription.sh"
 
-cat >"$work/subscription-poc.sh" <<'EOF'
+cat >"$work/subscription-probe.sh" <<'EOF'
 #!/bin/sh
 set -eu
 if [ "$1" = --validate-url ]; then
     [ "$(cat)" = 'https://subscription.example/test' ]
     exit
 fi
-[ "$1" = --state-dir ] && [ "$3" = --probe-timeout ] && [ "$4" = 1 ] &&
-    [ "$5" = --require-egress-ip ] && [ "$6" = --url-stdin ]
+[ "$#" -eq 1 ]
 [ "$(cat)" = 'https://subscription.example/test' ]
 [ ! -f "$UPDATE_FIXTURE/probe-fails" ] || exit 1
-cp "$UPDATE_FIXTURE/chosen.json" "$2/current.json"
+cp "$UPDATE_FIXTURE/chosen.json" "$1/current.json"
 EOF
 cat >"$work/service" <<'EOF'
 #!/bin/sh
@@ -62,7 +61,9 @@ cat >"$work/chosen.json" <<'EOF'
 {"selected":1,"nodes":[{"status":"working","protocol":"hysteria2","name":"Нидерланды","uri":"fixture","egress_ip":"192.0.2.9",
  "sing_box":{"type":"hysteria2","tag":"candidate","server":"chosen.example","server_port":443,"password":"fixture","tls":{"enabled":true}}}]}
 EOF
-run() { sh "$work/subscription.sh" "$@"; }
+run() { (cd / && sh "$work/subscription.sh" "$@"); }
+printf '%s\n' https://subscription.example/test >"$ROUTECRAFT_DIR/subscription.url"
+test "$(run get url)" = https://subscription.example/test
 run set url https://subscription.example/test
 test "$(run get url)" = https://subscription.example/test
 run set hwid fixture-device

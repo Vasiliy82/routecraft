@@ -45,7 +45,7 @@ if [ ! -f "$builder" ]; then
     fail=1
 fi
 
-for command in sing-box curl ip nft sysctl stty; do
+for command in sing-box curl ip nft sysctl stty jq flock mkfifo; do
     if command -v "$command" >/dev/null 2>&1; then
         echo "OK: $command found"
     else
@@ -54,6 +54,10 @@ for command in sing-box curl ip nft sysctl stty; do
         dependency_missing=1
     fi
 done
+if command -v jq >/dev/null 2>&1 && ! jq -ne '"%41" | @urid == "A"' >/dev/null 2>&1; then
+    echo 'ERROR: the subscription updater requires jq 1.8 or later.' >&2
+    fail=1
+fi
 if command -v sing-box >/dev/null 2>&1; then
     version=$(sing-box version 2>&1 | head -n 2 | tr '\n' ' ')
     echo "sing-box: $version"
@@ -157,10 +161,12 @@ if [ "$mode" = --install ] && [ "$dependency_missing" -ne 0 ] && [ "${ROUTECRAFT
     [ "$detected_arch" != unsupported ] && [ "$target_arch" = "$detected_arch" ] || { echo 'ERROR: unsupported system or mismatched bundle.'; exit 1; }
     [ "$conflict" -eq 0 ] || { echo 'ERROR: preflight could not confirm that the routing resources are available. See the reason above.'; exit 1; }
     packages=''
-    for package in sing-box curl ca-bundle coreutils-stty ip-full nftables-json kmod-nft-tproxy; do
+    for package in sing-box curl ca-bundle coreutils-stty ip-full nftables-json kmod-nft-tproxy jq; do
         package_installed "$package" && continue
         packages="$packages $package"
     done
+    command -v flock >/dev/null 2>&1 || packages="$packages flock"
+    command -v mkfifo >/dev/null 2>&1 || packages="$packages coreutils-mkfifo"
     if [ -z "$packages" ]; then
         echo 'Required packages are already installed; checking the runtime features.'
     elif command -v apk >/dev/null 2>&1; then
@@ -196,6 +202,9 @@ case "$mode" in
     --install)
         [ "$(id -u)" = 0 ] || { echo 'ERROR: install requires root.'; exit 1; }
         [ "$fail" -eq 0 ] || exit 1
+        for file in subscription.sh subscription-probe.sh; do
+            [ -s "$bundle_dir/$file" ] || { echo "ERROR: bundled $file is missing." >&2; exit 1; }
+        done
         destination=/etc/routecraft
         if [ -d "$destination" ]; then
             backup="/root/routecraft-backup-$(date +%Y%m%d-%H%M%S)"
@@ -208,6 +217,14 @@ case "$mode" in
         for file in TARGET_ARCH configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init; do
             [ ! -f "$bundle_dir/$file" ] || cp -f "$bundle_dir/$file" "$destination/$file"
         done
+        for file in subscription-probe.sh subscription.sh; do
+            staged=$(mktemp "$destination/.subscription-script.XXXXXX")
+            if ! { cp "$bundle_dir/$file" "$staged" && chmod 755 "$staged" && mv -f "$staged" "$destination/$file"; }; then
+                rm -f "$staged"
+                exit 1
+            fi
+        done
+        rm -f "$destination/subscription-poc.sh"
         if [ ! -e "$destination/policy.yaml" ]; then
             cp -f "$bundle_dir/policy.yaml" "$destination/policy.yaml"
         fi

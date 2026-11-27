@@ -17,7 +17,7 @@
 - Свободное место на persistent-разделе и в `/tmp`. Перед запуском можно посмотреть его командой `df -h / /tmp`; точный минимум зависит от firmware и пакетов.
 - Клиенты должны использовать этот OpenWrt как default gateway. Инсталлятор не меняет настройки DHCP, DNS-рекламу или шлюз клиентских устройств.
 
-Пакеты `sing-box`, `curl`, `ca-bundle`, `coreutils-stty`, `ip-full`, `nftables-json` и `kmod-nft-tproxy` ставятся штатными feeds по необходимости. OpenWrt 25.12 и новее использует `apk`, старые выпуски — `opkg` ([руководство OpenWrt](https://openwrt.org/docs/guide-user/additional-software/managing_packages)). Код содержит оба варианта, но end-to-end установка проверена на `apk` в OpenWrt 25.12.6. Установщик обновляет индекс пакетов и добавляет только отсутствующие зависимости; полный `apk upgrade`/`opkg upgrade` не запускается. После установки sing-box проверяется поддержка embedded Tailscale endpoint и nftables TPROXY.
+Пакеты `sing-box`, `curl`, `ca-bundle`, `coreutils-stty`, `ip-full`, `nftables-json`, `kmod-nft-tproxy` и `jq` ставятся штатными feeds по необходимости. Обновлятор подписок требует jq 1.8 или новее, а также команды `flock` и `mkfifo`. Если этих команд нет, установщик добавляет пакеты `flock` и `coreutils-mkfifo` соответственно. OpenWrt 25.12 и новее использует `apk`, старые выпуски — `opkg` ([руководство OpenWrt](https://openwrt.org/docs/guide-user/additional-software/managing_packages)). Установка проверена на `apk` в OpenWrt 25.12.6. Установщик обновляет индекс пакетов и добавляет отсутствующие зависимости. После установки проверяется поддержка embedded Tailscale endpoint и nftables TPROXY.
 
 Если на роутере уже работает другой sing-box/TPROXY, занят mark `0x81`, table `100` или порт `12345`, установщик остановит активацию, не выключая чужую конфигурацию. Сначала потребуется отдельный контролируемый переход. На известных устройствах состояние до установки может отличаться от чистой VM.
 
@@ -26,6 +26,8 @@
 ## Установка из публичного репозитория
 
 Файлы RouteCraft устанавливаются в `/etc/routecraft`. После подтверждённой активации OpenWrt управляет службой `routecraft` через `/etc/init.d/routecraft`. Архивы называются `routecraft-openwrt-<arch>.tar.gz`.
+
+В комплект входит `/etc/routecraft/subscription.sh`. [Обновление подписки после активации](#обновление-vpn-подписки)
 
 ### Файлы секретов
 
@@ -72,6 +74,37 @@ Bootstrap определит `uname -m`, скачает архив и SHA256, п
 
 Для классической схемы подключите WAN OpenWrt VM к upstream-сегменту, а LAN и клиентскую VM к отдельному внутреннему сегменту. Проверьте, что клиент получил адрес, DNS и шлюз из LAN. Сохраните доступ к консоли гипервизора на время настройки.
 
+## Обновление VPN-подписки
+
+После активации VPN-выхода утилита использует URL, сохранённый мастером. Для отдельного URL передайте содержимое закрытого файла через stdin. Если у провайдера уже зарегистрирован HWID, задайте его перед первой проверкой.
+
+```sh
+/etc/routecraft/subscription.sh set url --stdin < /path/to/private-subscription-url
+/etc/routecraft/subscription.sh set hwid REGISTERED_HWID
+```
+
+Команда `check` показывает результаты проверки узлов и номер первого рабочего выхода. Команда `update` применяет этот выход и перезапускает RouteCraft при изменении конфигурации.
+
+```sh
+/etc/routecraft/subscription.sh check
+/etc/routecraft/subscription.sh update
+```
+
+Чтобы включить расписание, выполните `crontab -e` от root и добавьте строку. В примере команда запускается ежедневно в 04:30 по часам роутера. Абсолютный путь позволяет cron запустить её из любого каталога.
+
+```cron
+30 4 * * * /etc/routecraft/subscription.sh update 2>&1 | logger -t routecraft-subscription
+```
+
+Проверьте запись командой `crontab -l` и состояние службы командой `/etc/init.d/cron status`. Если cron остановлен, запустите его и включите автозапуск.
+
+```sh
+/etc/init.d/cron enable
+/etc/init.d/cron start
+```
+
+Результаты запусков по расписанию можно посмотреть командой `logread | grep routecraft-subscription`.
+
 ## Обновление bundles разработчиками
 
 При изменении PoC разработчик запускает `make package-openwrt` и коммитит обновлённые архивы и SHA256 sidecars из `poc/bundles/`. Пользователю вручную собирать или копировать bundle не нужно.
@@ -94,6 +127,6 @@ nslookup theuselessweb.com                           # ожидается REFUSE
 ## Границы текущего PoC
 
 - Перехватывается IPv4 TCP/UDP; это не готовый полнофункциональный маршрутизатор для IPv6/ICMP.
-- Нет LuCI, обновления VLESS-подписки по расписанию и автоматического обновления GeoSite/GeoIP.
+- LuCI и автоматическое обновление GeoSite/GeoIP остаются отдельными этапами. Расписание обновления VPN-подписки задаётся в root crontab.
 - Готовые bundles хранятся в репозитории; при изменении PoC разработчики пересобирают их командой `make package-openwrt` и коммитят вместе с исходным кодом.
 - RouteCraft не предоставляет VPN-аккаунт и не гарантирует доступность сторонних сайтов. Туннели и выходные IP принадлежат выбранному вами провайдеру/серверу.

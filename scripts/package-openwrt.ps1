@@ -8,6 +8,8 @@ $required = @(
     (Join-Path $pocDir 'install.sh'),
     (Join-Path $pocDir 'configure.sh'),
     (Join-Path $pocDir 'start.sh'),
+    (Join-Path $pocDir 'subscription.sh'),
+    (Join-Path $pocDir 'subscription-probe.sh'),
     (Join-Path $pocDir 'dnsmasq-split.sh'),
     (Join-Path $pocDir 'direct-gateway.sh'),
     (Join-Path $pocDir 'tproxy-gateway.sh'),

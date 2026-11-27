@@ -2,64 +2,14 @@
 set -eu
 umask 077
 
-usage() {
-    cat <<'EOF'
-Usage: subscription-poc.sh [options] [URL]
-  --url-stdin             Read a new URL from stdin
-  --status                Show the saved selection and the latest attempt
-  --state-dir DIR         Default: /etc/routecraft/subscription-poc
-  --hwid ID               Set an explicitly chosen persistent HWID
-  --user-agent UA         Default: RouteCraft/0.1.0
-  --timeout SECONDS       HTTP timeout per attempt (default: 15)
-  --retries COUNT         Additional HTTP attempts per redirect hop (default: 2)
-  --probe-timeout SECONDS Timeout per sing-box command (default: 5)
-Run without a URL to refresh the saved subscription.
-EOF
-}
-
+# Internal worker for subscription.sh. It takes a private state path and reads the URL from stdin.
 die() { printf '%s\n' "$1" >&2; exit 1; }
 progress() { if [ -t 2 ]; then printf '%s\n' "$1" >&2; fi; }
 
-state=/etc/routecraft/subscription-poc
-mode=refresh
-url= agent= override=
-require_egress=0
-http_timeout=15 retries=2 probe_timeout=5
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --help|-h) usage; exit ;;
-        --require-egress-ip) require_egress=1; shift ;;
-        --validate-url)
-            [ "$#" -eq 1 ] && [ "$mode" = refresh ] || die 'Specify only --validate-url.'
-            mode=validate-url; shift ;;
-        --status|--url-stdin)
-            [ "$mode" = refresh ] || die 'Specify one operation.'
-            mode="${1#--}"
-            shift ;;
-        --state-dir|--hwid|--user-agent|--timeout|--retries|--probe-timeout)
-            [ "$#" -ge 2 ] || die 'Missing option value.'
-            case "$1" in
-                --state-dir) state="$2" ;;
-                --hwid) override="$2" ;;
-                --user-agent) agent="$2" ;;
-                --timeout) http_timeout="$2" ;;
-                --retries) retries="$2" ;;
-                --probe-timeout) probe_timeout="$2" ;;
-            esac
-            shift 2 ;;
-        -*) die 'Unknown option. Use --help.' ;;
-        *)  [ "$mode" = refresh ] && [ "$#" -eq 1 ] || die 'Expected a single subscription URL.'
-            url="$1"; mode=add; shift ;;
-    esac
-done
-
-for setting in "$http_timeout" "$retries" "$probe_timeout"; do
-    case "$setting" in ''|*[!0-9]*) die 'Timeouts and retry count must be integers.' ;; esac
-    [ "${#setting}" -le 3 ] || die 'Timeout or retry count is too large.'
-done
-[ "$http_timeout" -gt 0 ] && [ "$probe_timeout" -gt 0 ] && [ "$retries" -le 10 ] ||
-    die 'Timeouts must be positive and retries must be at most 10.'
-case "$state" in /*) ;; *) die 'The state directory must be an absolute path.' ;; esac
+[ "$#" -eq 1 ] || die 'Use subscription.sh for subscription commands.'
+state="$1"
+case "$state" in /*|--validate-url) ;; *) die 'The state directory must be an absolute path.' ;; esac
+http_timeout=15 retries=2 probe_timeout=1 agent=RouteCraft/0.1.0
 command -v jq >/dev/null 2>&1 || die 'jq 1.8 or later is required.'
 jq -ne '"%41" | @urid == "A"' >/dev/null 2>&1 || die 'jq 1.8 or later is required.'
 
@@ -71,23 +21,6 @@ show_nodes() {
         (if .key+1 == $selected then " (first working)" else "" end)
     ' "$1"
 }
-
-if [ "$mode" = status ]; then
-    [ -s "$state/last-attempt.json" ] || die 'No subscription attempt has been saved.'
-    jq -r '
-        "last_attempt=\(.at) http_status=\(.http_status) metadata_fields=\(.metadata | length)",
-        (select(.error != "") | "last_error=" + .error),
-        (if .error != "" then (.nodes | to_entries[] |
-            "\(.key+1) \(.value.protocol) \(.value.status)") else empty end)
-    ' "$state/last-attempt.json"
-    if [ -s "$state/current.json" ]; then
-        show_nodes "$state/current.json"
-        jq -r '"selected=\(.selected)"' "$state/current.json"
-    else
-        printf '%s\n' 'selected=none'
-    fi
-    exit
-fi
 
 origin_of() {
     printf '%s' "$1" | jq -Rser '
@@ -109,21 +42,10 @@ origin_of() {
     ' 2>/dev/null
 }
 
-case "$mode" in
-    url-stdin|validate-url) url=$(head -c 8193 | sed 's/\r$//') ;;
-    refresh)
-        url=$(jq -er '.url' "$state/current.json" 2>/dev/null) ||
-            die 'No saved subscription. Supply a URL.'
-        if [ -z "$agent" ]; then
-            agent=$(jq -r '.user_agent // empty' "$state/current.json")
-        fi ;;
-esac
+url=$(head -c 8193 | sed 's/\r$//')
 original_origin=$(origin_of "$url") || die 'Expected a valid HTTP or HTTPS subscription URL.'
-[ "$mode" != validate-url ] || exit 0
-agent=${agent:-RouteCraft/0.1.0}
-agent_config=$(printf '%s' "$agent" | jq -Rser 'select(all(explode[]; . >= 32 and . != 127)) | @json') ||
-    die 'Invalid User-Agent.'
-for dependency in curl flock hexdump sing-box; do
+[ "$state" != --validate-url ] || exit 0
+for dependency in curl flock mkfifo sing-box; do
     command -v "$dependency" >/dev/null 2>&1 || die "Missing command: $dependency"
 done
 
@@ -166,11 +88,7 @@ valid_hwid() {
     [ "${#1}" -ge 10 ] && [ "${#1}" -le 64 ]
 }
 
-if [ -n "$override" ]; then
-    valid_hwid "$override" || die 'Invalid manual HWID.'
-    printf '%s\n' "$override" > "$work/hwid"
-    publish "$work/hwid" hwid
-elif [ ! -e "$state/hwid" ]; then
+if [ ! -e "$state/hwid" ]; then
     cat /proc/sys/kernel/random/uuid > "$work/hwid" || die 'Cannot generate HWID.'
     valid_hwid "$(cat "$work/hwid")" || die 'Cannot generate HWID.'
     publish "$work/hwid" hwid
@@ -209,7 +127,7 @@ for hop in 1 2 3 4 5 6 7 8 9 10; do
     {
         printf 'url = "%s"\n' "$hop_url"
         if [ "$send_hwid" = yes ]; then
-            printf 'user-agent = %s\n' "$agent_config"
+            printf 'user-agent = "%s"\n' "$agent"
             printf 'header = "x-hwid: %s"\n' "$hwid"
             printf '%s\n' 'header = "x-device-os: Linux"' 'header = "x-device-model: RouteCraft"'
             printf '%s' "x-ver-os: ${os_version:-unknown}" | jq -Rsr '"header = " + @json'
@@ -484,11 +402,7 @@ case "$http_status" in
 esac
 [ -z "$parse_error" ] || fail_attempt "$parse_error"
 total=$(jq -r 'length' "$work/nodes")
-if [ "$require_egress" -eq 1 ]; then
-    progress "Received $total nodes. Checking compatibility and HTTPS with DNS through each VPN."
-else
-    progress "Received $total nodes. Checking compatibility and DNS-over-HTTPS."
-fi
+progress "Received $total nodes. Checking compatibility and HTTPS with DNS through each VPN."
 
 bounded() {
     rm -f "$work/timed-out"
@@ -510,17 +424,6 @@ bounded() {
     timer=
     if [ -f "$work/timed-out" ]; then return 124; fi
     return "$code"
-}
-
-valid_dns() {
-    # Match the ID, DNS success flags, one question, a nonzero answer count,
-    # and the original example.com A/IN question returned by the DoH server.
-    hex=$(hexdump -n 30 -ve '1/1 "%02x"' "$work/probe-output")
-    case "$hex" in
-        0000[89][0145]?00001????????????076578616d706c6503636f6d0000010001??)
-            [ "$(printf '%s' "$hex" | cut -c13-16)" != 0000 ] ;;
-        *) return 1 ;;
-    esac
 }
 
 egress_ip() {
@@ -560,7 +463,7 @@ probe_https() {
 
 jq -c '.[]' "$work/nodes" > "$work/queue"
 : > "$work/checked"
-if [ "$require_egress" -eq 1 ]; then mkfifo "$work/proxy-ready"; fi
+mkfifo "$work/proxy-ready"
 index=0 selected=0
 while IFS= read -r row; do
     index=$((index + 1))
@@ -582,29 +485,19 @@ while IFS= read -r row; do
         if [ "$status" = pending ]; then progress "[$index/$total] $heading"; fi
     fi
     if [ "$status" = pending ]; then
-        printf '%s\n' "$row" | jq --argjson https "$require_egress" '
-            {log:{disabled:true},dns:{servers:[{type:"local",tag:"local-dns"}]},
-             outbounds:[.sing_box],route:{final:"candidate",default_domain_resolver:"local-dns"}} |
-            if $https == 1 then
-                .log = {level:"info"} |
-                .inbounds = [{type:"mixed",tag:"probe",listen:"127.0.0.1",listen_port:0}] |
-                .dns.servers += [{type:"https",tag:"probe-dns",server:"1.1.1.1",detour:"candidate"}] |
-                .route.rules = [
-                    {domain:["api.ipify.org"],action:"resolve",server:"probe-dns",strategy:"ipv4_only",disable_cache:true},
-                    {domain:["api.ipify.org"],action:"route",outbound:"candidate"},
-                    {action:"reject"}
-                ]
-            else . end
+        printf '%s\n' "$row" | jq '
+            {log:{level:"info"},
+             inbounds:[{type:"mixed",tag:"probe",listen:"127.0.0.1",listen_port:0}],
+             dns:{servers:[{type:"local",tag:"local-dns"},
+                           {type:"https",tag:"probe-dns",server:"1.1.1.1",detour:"candidate"}]},
+             outbounds:[.sing_box],route:{final:"candidate",default_domain_resolver:"local-dns",rules:[
+                {domain:["api.ipify.org"],action:"resolve",server:"probe-dns",strategy:"ipv4_only",disable_cache:true},
+                {domain:["api.ipify.org"],action:"route",outbound:"candidate"},
+                {action:"reject"}
+             ]}}
         ' > "$work/probe.json"
         if bounded sing-box check -c "$work/probe.json"; then
-            if [ "$require_egress" -eq 1 ]; then
-                probe_https
-            elif bounded sing-box tools fetch -c "$work/probe.json" -o candidate \
-                'https://1.1.1.1/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'; then
-                if valid_dns; then status=working; else status=probe_failed; fi
-            else
-                case "$?" in 124) status=probe_timeout ;; *) status=probe_failed ;; esac
-            fi
+            probe_https
         else
             case "$?" in 124) status=check_timeout ;; *) status=sing_box_rejected ;; esac
         fi
@@ -628,10 +521,7 @@ jq -n --argjson selected "$selected" --rawfile url "$work/url" --rawfile user_ag
     --slurpfile nodes "$work/nodes" --slurpfile metadata "$work/metadata" \
     '{url:$url,user_agent:$user_agent,selected:$selected,nodes:$nodes[0],metadata:$metadata[0]}' > "$work/current"
 if [ ! -t 1 ] || [ ! -t 2 ]; then show_nodes "$work/current"; fi
-if [ "$selected" -eq 0 ]; then
-    if [ "$require_egress" -eq 1 ]; then fail_attempt 'No connection completed the VPN HTTPS probe.'; fi
-    fail_attempt 'No connection passed the sing-box DNS-over-HTTPS probe.'
-fi
+[ "$selected" -gt 0 ] || fail_attempt 'No connection completed the VPN HTTPS probe.'
 save_attempt ''
 publish "$work/current" current.json
 printf 'selected=%s (private result: current.json)\n' "$selected"

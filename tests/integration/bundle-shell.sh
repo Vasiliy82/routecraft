@@ -18,15 +18,17 @@ tar -xzf "$bundle" -C "$work"
 [ "$(cat "$work/TARGET_ARCH")" = "$arch" ]
 [ -s "$work/bin/routecraft-build" ]
 [ -f "$work/routecraft.init" ]
-if find "$work" \( -name 'routecraft-poc*' -o -name 'routecraft-lab*' \) | grep -q .; then
+if find "$work" \( -name 'routecraft-poc*' -o -name 'routecraft-lab*' -o -name 'subscription-poc.sh' \) | grep -q .; then
     echo 'Bundle contains obsolete RouteCraft file names' >&2
     exit 1
 fi
 cr=$(printf '\r')
-for name in configure.sh install.sh start.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init; do
+for name in configure.sh install.sh start.sh subscription.sh subscription-probe.sh dnsmasq-split.sh direct-gateway.sh tproxy-gateway.sh routecraft.init; do
+    [ -s "$work/$name" ]
     if grep -q "$cr" "$work/$name"; then echo "CRLF in $name" >&2; exit 1; fi
     sh -n "$work/$name"
 done
+(cd / && sh "$work/subscription.sh" --help) | grep -q '^Usage: subscription.sh'
 grep -q '^dir=/etc/routecraft$' "$work/routecraft.init"
 grep -q '^sh /etc/routecraft/configure.sh$' "$(dirname -- "$0")/../../poc/install-openwrt.sh"
 mkdir "$work/bin-stubs"

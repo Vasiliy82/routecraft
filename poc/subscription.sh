@@ -17,9 +17,11 @@ progress() { if [ -t 2 ]; then printf '%s\n' "$1" >&2; fi; }
 
 dir=${ROUTECRAFT_DIR:-/etc/routecraft}
 service=${ROUTECRAFT_SERVICE:-/etc/init.d/routecraft}
-engine="$(dirname "$0")/subscription-poc.sh"
+engine="$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)/subscription-probe.sh"
 state="$dir/subscription"
 probe="$state/probe"
+url_file="$state/url"
+[ -s "$url_file" ] || url_file="$dir/subscription.url"
 active="$dir/sing-box.json"
 lock="$dir/.update.lock"
 
@@ -128,7 +130,7 @@ case "$1" in
     get)
         [ "$#" -eq 2 ] || die 'Use get url, get hwid or get selected.'
         case "$2" in
-            url) file="$state/url" ;;
+            url) file="$url_file" ;;
             hwid) file="$probe/hwid" ;;
             selected) file="$state/selected.json" ;;
             *) die 'Unknown subscription setting.' ;;
@@ -140,8 +142,8 @@ case "$1" in
     *) usage >&2; exit 1 ;;
 esac
 
-[ -s "$state/url" ] || die 'Set the subscription URL first.'
-sh "$engine" --state-dir "$probe" --probe-timeout 1 --require-egress-ip --url-stdin <"$state/url"
+[ -s "$url_file" ] || die 'Set the subscription URL first.'
+sh "$engine" "$probe" <"$url_file"
 if [ "$1" = check ]; then
     progress 'Check complete. Use update to apply the selected node.'
     exit 0

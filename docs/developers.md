@@ -10,7 +10,7 @@
 - `nftables` TPROXY вместе с Linux policy routing передаёт транзитные IPv4 TCP/UDP соединения в sing-box.
 - Штатный OpenWrt procd запускает gateway service; для одной интерфейсной группы настраиваются forwarding и SRCNAT.
 - `poc/policy.yaml` задаёт порядок правил. `poc/build` собирает тестовый sing-box JSON из политики, VLESS-подписки и выбранных GeoSite/GeoIP SRS.
-- Автономный PoC URL-подписок запускается через `poc/subscription-poc.sh`. [Запуск](#автономный-poc-url-подписок)
+- `poc/subscription.sh` управляет подпиской и активным выходом `vpn-sub`. [Запуск и расписание](#обновление-активного-vpn-выхода)
 - Go CLI в `cmd/routecraft` и Go-пакеты `internal/` формируют основу будущего декларативного ядра; они не заменяют текущий PoC запускной service.
 
 ## Сборка и проверки
@@ -66,44 +66,12 @@ go run ./cmd/routecraft explain --domain example.org --port 80
 
 LuCI приложение использует контроллер RouteCraft через ограниченный `ubus`/`rpcd` API и ACL, а не shell-команды из браузерного кода. Контроллер остаётся единственным владельцем apply/rollback и общей активной конфигурации. До UI реализации сначала стабилизировать и документировать API, ошибки валидации, статус операций и структуру плана изменений; затем сделать LuCI-страницы политики, выходов, диагностики и подтверждения применения. Документы по альтернативным панелям и выбору LuCI как первого target собраны в [обзоре архитектуры](overview.md#поставка-и-пользовательский-интерфейс).
 
-## Автономный PoC URL-подписок
-
-Скопируйте `poc/subscription-poc.sh` в `/etc/routecraft/` и выставьте права `0755`. Скрипт работает под штатным OpenWrt `sh` и использует `curl`, `jq` 1.8+, `flock`, `hexdump`, системные корневые сертификаты и sing-box с командой `tools fetch`. PoC запускается вручную и проверяет узлы отдельными вызовами sing-box.
-
-Первый запуск читает URL из файла или позиционного аргумента. Вариант с файлом сохраняет URL вне аргументов процесса и истории оболочки.
-
-```sh
-/etc/routecraft/subscription-poc.sh --url-stdin < /path/to/private-subscription-url
-/etc/routecraft/subscription-poc.sh --status
-/etc/routecraft/subscription-poc.sh
-```
-
-Третья команда повторно загружает сохранённую подписку. `--hwid ID` задаёт уже зарегистрированный идентификатор вручную. По умолчанию UUID v4 создаётся один раз и переживает перезапуски при сохранении каталога состояния. `--user-agent UA` задаёт User-Agent для провайдеров с выбором формата по заголовкам. `--state-dir DIR` позволяет проверять второй URL отдельно.
-
-Порядковые номера в выводе и поле `selected` начинаются с единицы. Совместимость проверяет `sing-box check`, затем PoC запрашивает DNS-ответ через HTTPS для каждого прошедшего проверку выхода. В `current.json` под индексом `selected - 1` массива `nodes` лежат URI (если исходный формат содержит URI) и конфигурация выбранного выхода. Ошибка обновления оставляет предыдущий `current.json` и сохраняется в `last-attempt.json` вместе с заголовками ответа и распакованным телом в поле `body`. По умолчанию оба файла и `hwid` находятся в `/etc/routecraft/subscription-poc/`. Файлы содержат секреты и доступны через каталог с правами `0700`.
-
-Парсер принимает списки URI и Base64. Для JSON поддерживаются отдельные выходы sing-box, массивы и поле `outbounds`. Для Xray поддерживаются VLESS, VMess, Trojan и Shadowsocks с одиночным endpoint, а транспорт ограничен TCP, WebSocket, HTTP Upgrade и gRPC. XHTTP и неизвестные протоколы сохраняются со статусом несовместимости. Маршрутизация и DNS из ответа сохраняются как диагностические данные. Привязанные к устройству ссылки Happ собственного формата выходят за рамки приёма HTTP/HTTPS URL. [Документация Happ](https://github.com/HappDev/happ_su/blob/main/dev-docs/hwid-links.md) [Документация Remnawave](https://docs.rw/features/hwid-device-limit/)
-
-Регрессионный сценарий `sh tests/integration/subscription-poc.sh` запускается из корня checkout на OpenWrt с синтетическими ответами и пробами.
-
 ## Обновление активного VPN-выхода
 
-Разместите `poc/subscription.sh` и `poc/subscription-poc.sh` в `/etc/routecraft/` с правами 0755. Для применения нужна работающая служба RouteCraft со штатным loopback-входом `test-vless`. Утилита использует тот же sing-box, который запускается этой службой.
-
-```sh
-/etc/routecraft/subscription.sh set url --stdin < /path/to/private-subscription-url
-/etc/routecraft/subscription.sh check
-/etc/routecraft/subscription.sh update
-```
+Установщик размещает `subscription.sh` и его внутренний помощник `subscription-probe.sh` в `/etc/routecraft/`. Для применения нужна работающая служба RouteCraft со штатным loopback-входом `test-vless`. [Команды и настройка cron](install.md#обновление-vpn-подписки)
 
 При наличии зарегистрированного HWID задайте его командой `subscription.sh set hwid ID`. Команды `get url`, `get hwid` и `get selected` выводят секретные значения по явному запросу. `check` и `update` выводят статусы и найденные внешние IPv4. Условия выбора, формат состояния и порядок отката описаны в [ТЗ на обновление VPN-подписки](subscription-updater.md).
 
 При запуске из терминала ход проверки и подписи узлов выводятся в stderr по мере обработки. При запуске из cron итоговые строки сохраняют прежний формат. Подпись выбранного узла сохранена в поле `name` результата `get selected`.
 
-Пример записи в root crontab OpenWrt для ежедневной проверки в 04:30 по часам роутера. После изменения crontab перезапустите службу cron.
-
-```cron
-30 4 * * * /etc/routecraft/subscription.sh update 2>&1 | logger -t routecraft-subscription
-```
-
-Регрессия применения запускается на OpenWrt командой `sh tests/integration/subscription-update.sh`. Сценарий использует отдельный временный каталог, моделирует отказ рестарта и проверяет сохранность предыдущего выхода.
+Регрессии запускаются на OpenWrt командами `sh tests/integration/subscription-probe.sh` и `sh tests/integration/subscription-update.sh`. Сценарии используют отдельные временные каталоги и моделируют сетевые ответы и отказ перезапуска.
