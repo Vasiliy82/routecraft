@@ -103,7 +103,7 @@ ask_secret() {
 }
 
 read_secret() {
-    secret_file=${3:-$secret_dir/$2}
+    secret_file="$secret_dir/$2"
     if [ ! -e "$secret_file" ] && [ ! -L "$secret_file" ]; then
         ask_secret "$1"
         return
@@ -248,18 +248,12 @@ else
     headscale=$(ask 'Tailscale or Headscale control URL' "$control_default")
     exit_node=$(ask 'Tailscale Exit Node name or IP' "$exit_default")
 fi
-subscription_file=
-if [ "$first_install" != 1 ] && [ -z "${ROUTECRAFT_SECRET_DIR:-}" ]; then
-    if [ -s "$dir/subscription/url" ]; then subscription_file="$dir/subscription/url"
-    elif [ -s "$dir/subscription.url" ]; then subscription_file="$dir/subscription.url"; fi
+if [ "$first_install" = 1 ]; then
+    echo 'INFO: A VPN subscription URL is optional on the first installation.'
 fi
-subscription=$(read_secret 'VPN subscription URL (optional on first install)' vless-subscription-url "$subscription_file") || exit 1
+subscription=$(read_secret 'VPN subscription URL' vless-subscription-url) || exit 1
 if [ "$first_install" != 1 ]; then
-    auth_file=
-    if [ -z "${ROUTECRAFT_SECRET_DIR:-}" ] &&
-        [ ! -e "$secret_dir/tailscale-pre-auth-key" ] && [ ! -L "$secret_dir/tailscale-pre-auth-key" ] &&
-        [ -s "$dir/headscale.key" ]; then auth_file="$dir/headscale.key"; fi
-    auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key "$auth_file") || exit 1
+    auth_key=$(read_secret 'Tailscale or Headscale pre-auth key' tailscale-pre-auth-key) || exit 1
 fi
 
 case "$lan_if" in *[!a-zA-Z0-9_.-]*|'') echo 'Invalid interface name.' >&2; exit 1;; esac

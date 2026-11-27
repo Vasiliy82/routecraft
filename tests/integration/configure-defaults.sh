@@ -216,4 +216,16 @@ printf '%s\n' '{"endpoints":[{"type":"tailscale","tag":"tailscale-exit","exit_no
 printf '%s\n' n '' '' '' '' '' '' n | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
 grep -Fq 'Tailscale Exit Node name or IP [100.64.0.44]' "$tmp/err"
 grep -qx 'ROUTECRAFT_EXIT_NODE=100.64.0.44' "$tmp/site/site.candidate.env"
+mkdir "$tmp/site/subscription"
+printf 'https://example.invalid/runtime-url\n' >"$tmp/site/subscription/url"
+printf 'https://example.invalid/active-url\n' >"$tmp/site/subscription.url"
+sed "s|/root/routecraft-config|$ROUTECRAFT_SECRET_DIR|" \
+    "$repo/poc/configure.sh" >"$tmp/configure-default-secret-dir.sh"
+(
+    unset ROUTECRAFT_SECRET_DIR
+    printf '%s\n' n '' '' '' '' '' '' n | sh "$tmp/configure-default-secret-dir.sh"
+) >"$tmp/out" 2>"$tmp/err"
+grep -qx 'https://example.invalid/file-token' "$tmp/site/subscription.candidate.url"
+grep -qx 'file-test-key' "$tmp/site/headscale.candidate.key"
+grep -Fq "$ROUTECRAFT_SECRET_DIR/vless-subscription-url" "$tmp/out"
 echo 'configure-defaults: passed'
