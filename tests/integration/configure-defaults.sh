@@ -152,23 +152,35 @@ EOF
 chmod +x "$tmp/bin/apk"
 MOCK_APK_LOG="$tmp/apk-calls" MOCK_TS_FIXTURE="$tmp/tailscale-stub" MOCK_BIN="$tmp/bin"
 export MOCK_APK_LOG MOCK_TS_FIXTURE MOCK_BIN
-printf 'n\n\n\n\n\ny\nn\n\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
+has_system_state=0
+if [ -e /etc/config/tailscale ] || [ -e /etc/init.d/tailscale ] || [ -e /etc/tailscale/tailscaled.state ]; then
+    has_system_state=1
+fi
+{
+    printf 'n\n\n\n\n\ny\n'
+    if [ "$has_system_state" = 0 ]; then printf 'n\n'; fi
+    printf '\nn\n'
+} | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
 grep -q '^add tailscale$' "$tmp/apk-calls"
 grep -qx 'ROUTECRAFT_EXIT_NODE=' "$tmp/site/site.candidate.env"
-rm "$tmp/bin/tailscale"
-cat >"$tmp/ts-init" <<'EOF'
+if [ "$has_system_state" = 0 ]; then
+    rm "$tmp/bin/tailscale"
+    cat >"$tmp/ts-init" <<'EOF'
 #!/bin/sh
 case "$1" in enable|start) exit 0;; *) exit 1;; esac
 EOF
-chmod +x "$tmp/ts-init"
-ROUTECRAFT_TS_INIT="$tmp/ts-init" MOCK_TS_CALLS="$tmp/ts-calls" MOCK_TS_KEY_PATH="$tmp/ts-key-path"
-export ROUTECRAFT_TS_INIT MOCK_TS_CALLS MOCK_TS_KEY_PATH
-printf 'n\n\n\n\n\ny\ny\n\nsystem-test-key\n\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
-grep -q -- '--accept-dns=false' "$tmp/ts-calls"
-grep -q -- '--accept-routes=false' "$tmp/ts-calls"
-if grep -q system-test-key "$tmp/ts-calls"; then echo 'system key exposed in arguments' >&2; exit 1; fi
-[ ! -e "$(cat "$tmp/ts-key-path")" ]
-unset ROUTECRAFT_TS_INIT
+    chmod +x "$tmp/ts-init"
+    ROUTECRAFT_TS_INIT="$tmp/ts-init" MOCK_TS_CALLS="$tmp/ts-calls" MOCK_TS_KEY_PATH="$tmp/ts-key-path"
+    export ROUTECRAFT_TS_INIT MOCK_TS_CALLS MOCK_TS_KEY_PATH
+    printf 'n\n\n\n\n\ny\ny\n\nsystem-test-key\n\nn\n' | sh "$repo/poc/configure.sh" >"$tmp/out" 2>"$tmp/err"
+    grep -q -- '--accept-dns=false' "$tmp/ts-calls"
+    grep -q -- '--accept-routes=false' "$tmp/ts-calls"
+    if grep -q system-test-key "$tmp/ts-calls"; then echo 'system key exposed in arguments' >&2; exit 1; fi
+    [ ! -e "$(cat "$tmp/ts-key-path")" ]
+    unset ROUTECRAFT_TS_INIT
+else
+    grep -Fq 'Existing Tailscale state was found' "$tmp/err"
+fi
 rm "$tmp/bin/apk" "$tmp/bin/tailscale"
 PATH=$old_path; export PATH
 mv "$tmp/tailscale-stub" "$tmp/bin/tailscale"
